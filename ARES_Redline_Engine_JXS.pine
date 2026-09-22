@@ -1,0 +1,401 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Lorentzian Classification concept and portions of the ML logic: © jdehorty
+// ARES strategy integration, BBSR sequencing, slope filter, exits, and panel: JXS
+
+//@version=6
+strategy(
+     title="ARES Redline Engine Strategy v2 [BBSR + LC + Slope]",
+     shorttitle="ARES Redline v2",
+     overlay=true,
+     pyramiding=0,
+     initial_capital=10000,
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=100,
+     commission_type=strategy.commission.percent,
+     commission_value=0.0,
+     process_orders_on_close=true,
+     calc_on_every_tick=true,
+     max_labels_count=500)
+
+import jdehorty/MLExtensions/2 as ml
+
+// ============================================================================
+// 1. BBSR EXTREME
+// ============================================================================
+
+groupBBSR = "1. BBSR Extreme"
+bbSrc = input.source(close, "Source", group=groupBBSR)
+bbLength = input.int(20, "Bollinger Band Length", minval=1, group=groupBBSR)
+bbMult = input.float(2.0, "Bollinger StdDev", minval=0.001, maxval=50, group=groupBBSR)
+smoothK = input.int(3, "Stochastic K", minval=1, group=groupBBSR)
+smoothD = input.int(3, "Stochastic D", minval=1, group=groupBBSR)
+lengthRSI = input.int(14, "RSI Length", minval=1, group=groupBBSR)
+lengthStoch = input.int(14, "Stochastic Length", minval=1, group=groupBBSR)
+upperLimit = input.float(90.0, "Upper Extreme", minval=0, maxval=100, group=groupBBSR)
+lowerLimit = input.float(10.0, "Lower Extreme", minval=0, maxval=100, group=groupBBSR)
+showBBSRSignals = input.bool(true, "Show Original BBSR Signals", group=groupBBSR)
+
+basis = ta.sma(bbSrc, bbLength)
+dev = bbMult * ta.stdev(bbSrc, bbLength)
+upper = basis + dev
+lower = basis - dev
+rsi1 = ta.rsi(bbSrc, lengthRSI)
+stochRSI = ta.stoch(rsi1, rsi1, rsi1, lengthStoch)
+k = ta.sma(stochRSI, smoothK)
+d = ta.sma(k, smoothD)
+
+bbsrBear = close[1] > upper[1] and close < upper and k[1] > upperLimit and d[1] > upperLimit
+bbsrBull = close[1] < lower[1] and close > lower and k[1] < lowerLimit and d[1] < lowerLimit
+
+plot(basis, title="ARES Red Line", color=color.rgb(180, 30, 30), linewidth=2)
+upperPlot = plot(upper, title="BB Upper", color=color.new(color.teal, 25))
+lowerPlot = plot(lower, title="BB Lower", color=color.new(color.teal, 25))
+fill(upperPlot, lowerPlot, title="BB Background", color=color.new(color.teal, 95))
+plotshape(showBBSRSignals and bbsrBull, title="BBSR Bull", style=shape.triangleup, location=location.belowbar, color=color.green, size=size.tiny, text="B")
+plotshape(showBBSRSignals and bbsrBear, title="BBSR Bear", style=shape.triangledown, location=location.abovebar, color=color.red, size=size.tiny, text="B")
+
+// ============================================================================
+// 2. LORENTZIAN CLASSIFICATION TYPES AND FUNCTIONS
+// ============================================================================
+
+type FeatureArrays
+    array<float> f1
+    array<float> f2
+    array<float> f3
+    array<float> f4
+    array<float> f5
+
+type FeatureSeries
+    float f1
+    float f2
+    float f3
+    float f4
+    float f5
+
+series_from(string featureString, float _close, float _high, float _low, float _hlc3, int paramA, int paramB) =>
+    switch featureString
+        "RSI" => ml.n_rsi(_close, paramA, paramB)
+        "WT"  => ml.n_wt(_hlc3, paramA, paramB)
+        "CCI" => ml.n_cci(_close, paramA, paramB)
+        "ADX" => ml.n_adx(_high, _low, _close, paramA)
+        => ml.n_rsi(_close, paramA, paramB)
+
+// Each switch branch stays on one line to avoid Pine line-continuation errors.
+get_lorentzian_distance(int i, int featureCount, FeatureSeries fs, FeatureArrays fa) =>
+    switch featureCount
+        5 => math.log(1 + math.abs(fs.f1 - array.get(fa.f1, i))) + math.log(1 + math.abs(fs.f2 - array.get(fa.f2, i))) + math.log(1 + math.abs(fs.f3 - array.get(fa.f3, i))) + math.log(1 + math.abs(fs.f4 - array.get(fa.f4, i))) + math.log(1 + math.abs(fs.f5 - array.get(fa.f5, i)))
+        4 => math.log(1 + math.abs(fs.f1 - array.get(fa.f1, i))) + math.log(1 + math.abs(fs.f2 - array.get(fa.f2, i))) + math.log(1 + math.abs(fs.f3 - array.get(fa.f3, i))) + math.log(1 + math.abs(fs.f4 - array.get(fa.f4, i)))
+        3 => math.log(1 + math.abs(fs.f1 - array.get(fa.f1, i))) + math.log(1 + math.abs(fs.f2 - array.get(fa.f2, i))) + math.log(1 + math.abs(fs.f3 - array.get(fa.f3, i)))
+        2 => math.log(1 + math.abs(fs.f1 - array.get(fa.f1, i))) + math.log(1 + math.abs(fs.f2 - array.get(fa.f2, i)))
+        => 0.0
+
+// ============================================================================
+// 3. LC SETTINGS AND FEATURES
+// ============================================================================
+
+groupLC = "2. Lorentzian Classification"
+lcSource = input.source(close, "LC Source", group=groupLC)
+neighborsCount = input.int(8, "Neighbors Count", minval=1, maxval=100, group=groupLC)
+maxBarsBack = input.int(2000, "Max Bars Back", minval=100, group=groupLC)
+featureCount = input.int(5, "Feature Count", minval=2, maxval=5, group=groupLC)
+minPredictionStrength = input.float(0.0, "Minimum Prediction Strength", minval=0, step=1, tooltip="Higher values require stronger LC confirmation.", group=groupLC)
+
+groupFilters = "3. LC Filters"
+useVolatilityFilter = input.bool(true, "Use Volatility Filter", group=groupFilters)
+useRegimeFilter = input.bool(true, "Use Regime Filter", group=groupFilters)
+regimeThreshold = input.float(-0.1, "Regime Threshold", minval=-10, maxval=10, step=0.1, group=groupFilters)
+useADXFilter = input.bool(false, "Use ADX Filter", group=groupFilters)
+adxThreshold = input.int(20, "ADX Threshold", minval=0, maxval=100, group=groupFilters)
+useEMAFilter = input.bool(false, "Use EMA Filter", group=groupFilters)
+emaPeriod = input.int(200, "EMA Period", minval=1, group=groupFilters)
+useSMAFilter = input.bool(false, "Use SMA Filter", group=groupFilters)
+smaPeriod = input.int(200, "SMA Period", minval=1, group=groupFilters)
+
+groupFeatures = "4. LC Feature Engineering"
+f1String = input.string("RSI", "Feature 1", options=["RSI", "WT", "CCI", "ADX"], group=groupFeatures)
+f1A = input.int(14, "Feature 1 Parameter A", group=groupFeatures)
+f1B = input.int(1, "Feature 1 Parameter B", group=groupFeatures)
+f2String = input.string("WT", "Feature 2", options=["RSI", "WT", "CCI", "ADX"], group=groupFeatures)
+f2A = input.int(10, "Feature 2 Parameter A", group=groupFeatures)
+f2B = input.int(11, "Feature 2 Parameter B", group=groupFeatures)
+f3String = input.string("CCI", "Feature 3", options=["RSI", "WT", "CCI", "ADX"], group=groupFeatures)
+f3A = input.int(20, "Feature 3 Parameter A", group=groupFeatures)
+f3B = input.int(1, "Feature 3 Parameter B", group=groupFeatures)
+f4String = input.string("ADX", "Feature 4", options=["RSI", "WT", "CCI", "ADX"], group=groupFeatures)
+f4A = input.int(20, "Feature 4 Parameter A", group=groupFeatures)
+f4B = input.int(2, "Feature 4 Parameter B", group=groupFeatures)
+f5String = input.string("RSI", "Feature 5", options=["RSI", "WT", "CCI", "ADX"], group=groupFeatures)
+f5A = input.int(9, "Feature 5 Parameter A", group=groupFeatures)
+f5B = input.int(1, "Feature 5 Parameter B", group=groupFeatures)
+
+featureSeries = FeatureSeries.new(
+     series_from(f1String, close, high, low, hlc3, f1A, f1B),
+     series_from(f2String, close, high, low, hlc3, f2A, f2B),
+     series_from(f3String, close, high, low, hlc3, f3A, f3B),
+     series_from(f4String, close, high, low, hlc3, f4A, f4B),
+     series_from(f5String, close, high, low, hlc3, f5A, f5B))
+
+var f1Array = array.new_float()
+var f2Array = array.new_float()
+var f3Array = array.new_float()
+var f4Array = array.new_float()
+var f5Array = array.new_float()
+array.push(f1Array, featureSeries.f1)
+array.push(f2Array, featureSeries.f2)
+array.push(f3Array, featureSeries.f3)
+array.push(f4Array, featureSeries.f4)
+array.push(f5Array, featureSeries.f5)
+featureArrays = FeatureArrays.new(f1Array, f2Array, f3Array, f4Array, f5Array)
+
+// ============================================================================
+// 4. LC NEIGHBOR SEARCH AND STATE
+// ============================================================================
+
+LONG_STATE = 1
+SHORT_STATE = -1
+NEUTRAL_STATE = 0
+
+yTrainSeries = lcSource[4] < lcSource ? SHORT_STATE : lcSource[4] > lcSource ? LONG_STATE : NEUTRAL_STATE
+var yTrainArray = array.new_int()
+array.push(yTrainArray, yTrainSeries)
+
+var predictions = array.new_float()
+var distances = array.new_float()
+array.clear(predictions)
+array.clear(distances)
+
+float lastDistance = -1.0
+int historySize = array.size(yTrainArray)
+int searchStart = math.max(0, historySize - maxBarsBack)
+int searchEnd = historySize - 2
+
+if historySize > 5 and searchEnd >= searchStart
+    for i = searchStart to searchEnd
+        float currentDistance = get_lorentzian_distance(i, featureCount, featureSeries, featureArrays)
+        if not na(currentDistance) and currentDistance >= lastDistance and i % 4 != 0
+            lastDistance := currentDistance
+            array.push(distances, currentDistance)
+            array.push(predictions, float(array.get(yTrainArray, i)))
+            if array.size(predictions) > neighborsCount
+                int qIndex = int(math.floor(neighborsCount * 0.75))
+                qIndex := math.max(0, math.min(qIndex, array.size(distances) - 1))
+                lastDistance := array.get(distances, qIndex)
+                array.shift(distances)
+                array.shift(predictions)
+
+float lcPrediction = array.size(predictions) > 0 ? array.sum(predictions) : 0.0
+volatilityFilter = ml.filter_volatility(1, 10, useVolatilityFilter)
+regimeFilter = ml.regime_filter(ohlc4, regimeThreshold, useRegimeFilter)
+adxFilter = ml.filter_adx(lcSource, 14, adxThreshold, useADXFilter)
+filterAll = volatilityFilter and regimeFilter and adxFilter
+
+var int lcState = NEUTRAL_STATE
+if lcPrediction > 0 and filterAll
+    lcState := LONG_STATE
+else if lcPrediction < 0 and filterAll
+    lcState := SHORT_STATE
+else
+    lcState := nz(lcState[1], NEUTRAL_STATE)
+
+ema = ta.ema(close, emaPeriod)
+sma = ta.sma(close, smaPeriod)
+emaBull = not useEMAFilter or close > ema
+emaBear = not useEMAFilter or close < ema
+smaBull = not useSMAFilter or close > sma
+smaBear = not useSMAFilter or close < sma
+lcBullConfirmed = lcState == LONG_STATE and math.abs(lcPrediction) >= minPredictionStrength and emaBull and smaBull
+lcBearConfirmed = lcState == SHORT_STATE and math.abs(lcPrediction) >= minPredictionStrength and emaBear and smaBear
+
+// ============================================================================
+// 5. ARES ENTRY SEQUENCING
+// ============================================================================
+
+groupARES = "5. ARES Entry Logic"
+crossMode = input.string("Aggressive Wick Cross", "Red Line Cross Mode", options=["Aggressive Wick Cross", "Confirmed Close Cross"], group=groupARES)
+minimumBarsAfterSignal = input.int(1, "Minimum Bars After BBSR Signal", minval=0, group=groupARES)
+maximumBarsAfterSignal = input.int(20, "Maximum Bars To Wait", minval=1, group=groupARES)
+showArmedState = input.bool(true, "Show Armed Setup", group=groupARES)
+showLCState = input.bool(false, "Show LC State", group=groupARES)
+
+var int armedDirection = 0
+var int armedBar = na
+
+if bbsrBull
+    armedDirection := 1
+    armedBar := bar_index
+if bbsrBear
+    armedDirection := -1
+    armedBar := bar_index
+
+int setupAge = na(armedBar) ? 999999 : bar_index - armedBar
+if armedDirection != 0 and setupAge > maximumBarsAfterSignal
+    armedDirection := 0
+    armedBar := na
+
+bullSetupReady = armedDirection == 1 and setupAge >= minimumBarsAfterSignal and setupAge <= maximumBarsAfterSignal
+bearSetupReady = armedDirection == -1 and setupAge >= minimumBarsAfterSignal and setupAge <= maximumBarsAfterSignal
+aggressiveBullCross = close[1] < basis[1] and high >= basis
+aggressiveBearCross = close[1] > basis[1] and low <= basis
+confirmedBullCross = ta.crossover(close, basis)
+confirmedBearCross = ta.crossunder(close, basis)
+bullRedlineCross = crossMode == "Aggressive Wick Cross" ? aggressiveBullCross : confirmedBullCross
+bearRedlineCross = crossMode == "Aggressive Wick Cross" ? aggressiveBearCross : confirmedBearCross
+
+// ============================================================================
+// 6. HARD PRICE-SLOPE AND BAR-AGREEMENT FILTER
+// ============================================================================
+
+groupSlope = "6. Price Slope Filter"
+useSlopeFilter = input.bool(true, "Use Slope Filter", tooltip="Rejects entries when recent price slope disagrees with the intended direction.", group=groupSlope)
+slopeLookback = input.int(5, "Slope Lookback", minval=2, maxval=50, group=groupSlope)
+minSlopeStrength = input.float(0.05, "Minimum ATR-Normalized Slope", minval=0, step=0.01, group=groupSlope)
+requireBarAgreement = input.bool(true, "Require Directional Bars", group=groupSlope)
+barAgreementLookback = input.int(5, "Directional Bar Lookback", minval=2, maxval=20, group=groupSlope)
+minimumDirectionalBars = input.int(3, "Minimum Matching Bars", minval=1, maxval=20, group=groupSlope)
+
+regressionNow = ta.linreg(close, slopeLookback, 0)
+regressionPrevious = ta.linreg(close, slopeLookback, 1)
+priceSlope = regressionNow - regressionPrevious
+slopeATR = ta.atr(14)
+normalizedSlope = slopeATR > 0 ? priceSlope / slopeATR : 0.0
+
+int bullishBarCount = 0
+int bearishBarCount = 0
+for i = 0 to barAgreementLookback - 1
+    if close[i] > close[i + 1]
+        bullishBarCount += 1
+    if close[i] < close[i + 1]
+        bearishBarCount += 1
+
+int requiredDirectionalBars = math.min(minimumDirectionalBars, barAgreementLookback)
+bullBarAgreement = not requireBarAgreement or bullishBarCount >= requiredDirectionalBars
+bearBarAgreement = not requireBarAgreement or bearishBarCount >= requiredDirectionalBars
+bullSlopeGood = not useSlopeFilter or (normalizedSlope >= minSlopeStrength and bullBarAgreement)
+bearSlopeGood = not useSlopeFilter or (normalizedSlope <= -minSlopeStrength and bearBarAgreement)
+
+strongBullSlope = normalizedSlope >= minSlopeStrength
+strongBearSlope = normalizedSlope <= -minSlopeStrength
+slopeStateText = strongBullSlope and bullBarAgreement ? "STRONG UP" : strongBearSlope and bearBarAgreement ? "STRONG DOWN" : normalizedSlope > 0 ? "WEAK UP" : normalizedSlope < 0 ? "WEAK DOWN" : "FLAT"
+slopeStateColor = strongBullSlope and bullBarAgreement ? color.lime : strongBearSlope and bearBarAgreement ? color.red : color.orange
+
+// Every gate is a hard requirement for a strategy entry.
+aresBuy = bullSetupReady and bullRedlineCross and lcBullConfirmed and bullSlopeGood
+aresSell = bearSetupReady and bearRedlineCross and lcBearConfirmed and bearSlopeGood
+
+// ============================================================================
+// 7. STRATEGY EXECUTION AND EXITS
+// ============================================================================
+
+groupExit = "7. Strategy Exits"
+reverseOnOpposite = input.bool(true, "Reverse On Opposite ARES Signal", group=groupExit)
+useFixedExit = input.bool(false, "Use Fixed TP / SL", group=groupExit)
+profitTarget = input.float(0.50, "Profit Target ($)", minval=0.01, step=0.01, group=groupExit)
+stopLoss = input.float(0.10, "Stop Loss ($)", minval=0.01, step=0.01, group=groupExit)
+
+longAllowed = reverseOnOpposite ? strategy.position_size <= 0 : strategy.position_size == 0
+shortAllowed = reverseOnOpposite ? strategy.position_size >= 0 : strategy.position_size == 0
+
+if aresBuy and longAllowed
+    strategy.entry("ARES LONG", strategy.long)
+if aresSell and shortAllowed
+    strategy.entry("ARES SHORT", strategy.short)
+
+if useFixedExit and strategy.position_size > 0
+    strategy.exit("ARES LONG EXIT", from_entry="ARES LONG", limit=strategy.position_avg_price + profitTarget, stop=strategy.position_avg_price - stopLoss)
+if useFixedExit and strategy.position_size < 0
+    strategy.exit("ARES SHORT EXIT", from_entry="ARES SHORT", limit=strategy.position_avg_price - profitTarget, stop=strategy.position_avg_price + stopLoss)
+
+if aresBuy or aresSell
+    armedDirection := 0
+    armedBar := na
+
+// ============================================================================
+// 8. CHART VISUALS AND ALERTS
+// ============================================================================
+
+bgcolor(showArmedState and armedDirection == 1 ? color.new(color.green, 93) : na, title="Bull Setup Armed")
+bgcolor(showArmedState and armedDirection == -1 ? color.new(color.red, 93) : na, title="Bear Setup Armed")
+plotshape(aresBuy, title="ARES BUY", style=shape.labelup, location=location.belowbar, color=color.lime, textcolor=color.black, size=size.small, text="ARES\nBUY")
+plotshape(aresSell, title="ARES SELL", style=shape.labeldown, location=location.abovebar, color=color.red, textcolor=color.white, size=size.small, text="ARES\nSELL")
+plotshape(showLCState and lcBullConfirmed, title="LC Bull", style=shape.circle, location=location.belowbar, color=color.new(color.green, 50), size=size.tiny)
+plotshape(showLCState and lcBearConfirmed, title="LC Bear", style=shape.circle, location=location.abovebar, color=color.new(color.red, 50), size=size.tiny)
+plot(useEMAFilter ? ema : na, title="LC EMA Filter", color=color.orange)
+plot(useSMAFilter ? sma : na, title="LC SMA Filter", color=color.blue)
+
+alertcondition(aresBuy, title="ARES BUY", message="ARES BUY | {{ticker}} | {{interval}} | {{close}}")
+alertcondition(aresSell, title="ARES SELL", message="ARES SELL | {{ticker}} | {{interval}} | {{close}}")
+alertcondition(aresBuy or aresSell, title="ARES ENTRY", message="ARES ENTRY | {{ticker}} | {{interval}} | {{close}}")
+
+// ============================================================================
+// 9. STATS PANEL
+// ============================================================================
+
+groupStats = "8. Stats Panel"
+showStats = input.bool(true, "Show Stats Panel", group=groupStats)
+statsLocation = input.string("Top Right", "Panel Location", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group=groupStats)
+statsPosition = statsLocation == "Top Left" ? position.top_left : statsLocation == "Bottom Right" ? position.bottom_right : statsLocation == "Bottom Left" ? position.bottom_left : position.top_right
+
+closedTrades = strategy.closedtrades
+winningTrades = strategy.wintrades
+losingTrades = strategy.losstrades
+winRate = closedTrades > 0 ? winningTrades / closedTrades * 100.0 : 0.0
+grossLossAbsolute = math.abs(strategy.grossloss)
+profitFactor = grossLossAbsolute > 0 ? strategy.grossprofit / grossLossAbsolute : na
+averageTrade = closedTrades > 0 ? strategy.netprofit / closedTrades : 0.0
+
+var float peakEquity = strategy.equity
+peakEquity := math.max(peakEquity, strategy.equity)
+currentDrawdown = peakEquity - strategy.equity
+var float maximumDrawdown = 0.0
+maximumDrawdown := math.max(maximumDrawdown, currentDrawdown)
+
+positionText = strategy.position_size > 0 ? "LONG" : strategy.position_size < 0 ? "SHORT" : "FLAT"
+positionColor = strategy.position_size > 0 ? color.lime : strategy.position_size < 0 ? color.red : color.gray
+armedText = armedDirection == 1 ? "BULL ARMED" : armedDirection == -1 ? "BEAR ARMED" : "NONE"
+armedColor = armedDirection == 1 ? color.lime : armedDirection == -1 ? color.red : color.gray
+lcText = lcBullConfirmed ? "BULLISH" : lcBearConfirmed ? "BEARISH" : "NEUTRAL"
+lcColor = lcBullConfirmed ? color.lime : lcBearConfirmed ? color.red : color.gray
+barCountText = "UP " + str.tostring(bullishBarCount) + " / DOWN " + str.tostring(bearishBarCount)
+
+var table statsTable = table.new(statsPosition, 2, 18, border_width=1, frame_width=1)
+
+if barstate.islast and showStats
+    table.cell(statsTable, 0, 0, "ARES REDLINE", text_color=color.white, bgcolor=color.rgb(125, 20, 20))
+    table.cell(statsTable, 1, 0, "v2", text_color=color.white, bgcolor=color.rgb(125, 20, 20))
+    table.cell(statsTable, 0, 1, "Position")
+    table.cell(statsTable, 1, 1, positionText, text_color=positionColor)
+    table.cell(statsTable, 0, 2, "BBSR Setup")
+    table.cell(statsTable, 1, 2, armedText, text_color=armedColor)
+    table.cell(statsTable, 0, 3, "LC State")
+    table.cell(statsTable, 1, 3, lcText, text_color=lcColor)
+    table.cell(statsTable, 0, 4, "LC Score")
+    table.cell(statsTable, 1, 4, str.tostring(lcPrediction, "#"))
+    table.cell(statsTable, 0, 5, "Price Slope")
+    table.cell(statsTable, 1, 5, slopeStateText, text_color=slopeStateColor)
+    table.cell(statsTable, 0, 6, "Slope Strength")
+    table.cell(statsTable, 1, 6, str.tostring(normalizedSlope, "#.###"))
+    table.cell(statsTable, 0, 7, "Directional Bars")
+    table.cell(statsTable, 1, 7, barCountText)
+    table.cell(statsTable, 0, 8, "Closed Trades")
+    table.cell(statsTable, 1, 8, str.tostring(closedTrades))
+    table.cell(statsTable, 0, 9, "Wins")
+    table.cell(statsTable, 1, 9, str.tostring(winningTrades), text_color=color.lime)
+    table.cell(statsTable, 0, 10, "Losses")
+    table.cell(statsTable, 1, 10, str.tostring(losingTrades), text_color=color.red)
+    table.cell(statsTable, 0, 11, "Win Rate")
+    table.cell(statsTable, 1, 11, str.tostring(winRate, "#.##") + "%")
+    table.cell(statsTable, 0, 12, "Profit Factor")
+    table.cell(statsTable, 1, 12, na(profitFactor) ? "N/A" : str.tostring(profitFactor, "#.##"))
+    table.cell(statsTable, 0, 13, "Net P/L")
+    table.cell(statsTable, 1, 13, str.tostring(strategy.netprofit, "#.##"), text_color=strategy.netprofit >= 0 ? color.lime : color.red)
+    table.cell(statsTable, 0, 14, "Gross Profit")
+    table.cell(statsTable, 1, 14, str.tostring(strategy.grossprofit, "#.##"), text_color=color.lime)
+    table.cell(statsTable, 0, 15, "Gross Loss")
+    table.cell(statsTable, 1, 15, str.tostring(strategy.grossloss, "#.##"), text_color=color.red)
+    table.cell(statsTable, 0, 16, "Avg Trade")
+    table.cell(statsTable, 1, 16, str.tostring(averageTrade, "#.##"))
+    table.cell(statsTable, 0, 17, "Max Drawdown")
+    table.cell(statsTable, 1, 17, str.tostring(maximumDrawdown, "#.##"), text_color=color.orange)
