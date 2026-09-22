@@ -1,217 +1,203 @@
-# ARES Redline Engine ⚔️
+# ARES Confirmation Engine
 
 ![Pine Script](https://img.shields.io/badge/Pine%20Script-v6-blue)
 ![Python](https://img.shields.io/badge/Language-Python-blue)
 ![Platform](https://img.shields.io/badge/Platform-TradingView-black)
 ![License](https://img.shields.io/badge/License-MPL--2.0-purple)
 ![Engine](https://img.shields.io/badge/Engine-BBSR%20%2B%20Lorentzian-red)
-![Status](https://img.shields.io/badge/Mode-Backtesting%20%2F%20Research-yellow)
 
-**ARES Redline Engine** is a TradingView strategy that combines Bollinger Band/Stochastic RSI extremes, a red-line mean-reversion trigger, Lorentzian nearest-neighbor classification, and a hard price-slope filter.
+**ARES** is a TradingView confirmation engine built around a simple sequence:
 
-The strategy waits for a BBSR extreme, arms a directional setup, watches for price to attack the Bollinger basis, and only enters when Lorentzian state and recent momentum agree.
+**BBSR arrow → LC confirmation bars → slope confirmation → entry flag**
 
-Repository: [https://github.com/woi-6ix/ARES_Redline_Engine_JXS](https://github.com/woi-6ix/ARES_Redline_Engine_JXS)
+The previous red-line-cross requirement has been removed. A BBSR Bull or Bear arrow now starts the setup directly.
 
-> For backtesting, education, and research only. No strategy can guarantee profitable trades.
+Repository: https://github.com/woi-6ix/ARES_Redline_Engine_JXS
 
----
-
-## Overview
-
-ARES is designed to reject weak or contradictory entries. Every trade must pass four gates:
-
-1. A BBSR extreme arms the setup.
-2. Price attacks or crosses the red Bollinger basis.
-3. Lorentzian Classification agrees with the direction.
-4. ATR-normalized slope and recent bars confirm momentum.
-
-The setup expires if price does not reach the red line within the configured waiting window.
+> For research, calibration, and backtesting only.
 
 ---
 
-## Entry Logic
+## Signal Logic
 
-| Gate | Long | Short |
-| --- | --- | --- |
-| BBSR | Bull extreme armed | Bear extreme armed |
-| Red line | Wick or close crosses above | Wick or close crosses below |
-| Lorentzian state | Bullish | Bearish |
-| Regression slope | At or above positive threshold | At or below negative threshold |
-| Recent bars | Enough bullish movement | Enough bearish movement |
+### Bullish
 
-All gates are required. A valid BBSR, red-line, and Lorentzian setup is ignored when the slope or directional-bar filter fails.
+1. BBSR prints a **Bull** arrow during the active session.
+2. ARES begins counting confirmation bars starting from the **next candle**.
+3. Every confirmation bar must have:
+   - bullish Lorentzian Classification state;
+   - positive ATR-normalized price slope above the configured threshold.
+4. Once the selected number of consecutive bars is reached, ARES prints a **BUY flag**.
+5. The entry alert fires only at this point.
+
+### Bearish
+
+1. BBSR prints a **Bear** arrow during the active session.
+2. Confirmation begins on the next candle.
+3. Every confirmation bar must have:
+   - bearish Lorentzian Classification state;
+   - negative ATR-normalized price slope below the configured threshold.
+4. Once the selected number of consecutive bars is reached, ARES prints a **SELL flag**.
+5. The entry alert fires only after confirmation is complete.
+
+The confirmation count is configurable. The default is **2 bars**, but it can be changed to 1 or any larger value supported by the input.
 
 ---
 
-## Core Features
+## Trading Window
 
-- **BBSR extreme detection:** Combines Bollinger Band re-entry with Stochastic RSI extremes.
-- **Red-line trigger:** Uses the Bollinger basis as the central attack or cross level.
-- **Lorentzian classification:** Compares normalized RSI, WaveTrend, CCI, and ADX feature states with historical samples.
-- **Hard slope filter:** Blocks entries when recent price slope disagrees with the trade.
-- **Directional-bar agreement:** Requires enough recent bars to support the intended direction.
-- **Post-entry G gauge:** Displays `G+` or `G-` after entry to show immediate slope direction.
-- **Strategy testing:** Supports reversals and optional fixed target and stop exits.
-- **Stats and alerts:** Provides on-chart performance metrics and TradingView alert conditions.
+ARES uses:
+
+**09:30–15:00 America/New_York**
+
+BBSR arrows outside the trading window do not arm a setup.
+
+Pending setups are cleared outside the active session. Active trades can optionally receive an exit at 3:00 PM.
 
 ---
 
-## Methodology
+## Lorentzian Confirmation
 
-### 1. BBSR setup
+ARES embeds the Lorentzian Classification feature engine and Approximate Nearest Neighbor logic used by the LC indicator.
 
-The setup begins when price closes back inside a Bollinger Band after being outside it on the previous bar, while smoothed Stochastic RSI is at an extreme.
+Default features:
 
-| Setup | Price condition | Oscillator condition |
-| --- | --- | --- |
-| Bullish | Re-enters above the lower band | K and D below the lower limit |
-| Bearish | Re-enters below the upper band | K and D above the upper limit |
-
-### 2. Red-line trigger
-
-Two entry modes are available:
-
-| Mode | Requirement |
+| Feature | Parameters |
 | --- | --- |
-| Aggressive Wick Cross | The candle penetrates the Bollinger basis |
-| Confirmed Close Cross | The candle closes across the Bollinger basis |
+| RSI | 14 / 1 |
+| WaveTrend | 10 / 11 |
+| CCI | 20 / 1 |
+| ADX | 20 / 2 |
+| RSI | 9 / 1 |
 
-### 3. Lorentzian classification
+Optional LC filters include volatility, regime, ADX, EMA, and SMA confirmation.
 
-ARES compares the current feature state with chronologically spaced historical samples using Lorentzian distance:
-
-```text
-d(x, y) = Σ log(1 + |xᵢ − yᵢ|)
-```
-
-Optional volatility, regime, ADX, EMA, and SMA filters can further restrict the classification state.
-
-### 4. Slope confirmation and G gauge
-
-The entry slope is normalized by ATR:
-
-```text
-Normalized slope = regression slope / ATR(14)
-```
-
-| Default setting | Value |
-| --- | ---: |
-| Slope lookback | 5 bars |
-| Minimum normalized slope | 0.05 |
-| Directional-bar lookback | 5 bars |
-| Minimum matching bars | 3 bars |
-| G gauge duration | 4 bars after entry |
-
-`G+` means the immediate raw price slope is bullish. `G-` means it is bearish. A long followed by `G-`, or a short followed by `G+`, is an early caution signal rather than a separate exit.
-
-### 5. Exits
-
-By default, the strategy reverses on an opposite valid signal. Optional fixed exits can also be enabled:
-
-| Exit input | Default |
-| --- | ---: |
-| Fixed TP/SL | Disabled |
-| Profit target | $0.50 |
-| Stop loss | $0.10 |
-
-The `$0.50` target and `$0.10` stop are distances in the charted instrument's price—not option-premium targets.
+ARES does not enter simply because LC is bullish or bearish. LC must match the original BBSR direction on **each required confirmation candle**.
 
 ---
 
-## Quick Start 🚀
+## Slope Confirmation
 
-1. Open [`ARES_Redline_Engine_JXS.pine`](./ARES_Redline_Engine_JXS.pine).
-2. Copy the complete source code.
-3. Open TradingView and select **Pine Editor**.
-4. Paste the strategy, save it, and select **Add to chart**.
-5. Open **Strategy Tester** to review historical results.
+Price slope is calculated from linear regression and normalized by ATR.
 
-To clone the repository:
+For a bullish confirmation bar:
 
-```bash
-git clone https://github.com/woi-6ix/ARES_Redline_Engine_JXS.git
-cd ARES_Redline_Engine_JXS
+```text
+Normalized slope >= minimum slope threshold
 ```
 
-### Requirements
+For a bearish confirmation bar:
 
-- TradingView with Pine Editor and Strategy Tester access
-- Pine Script v6
-- Access to the published `jdehorty/MLExtensions/2` Pine library
+```text
+Normalized slope <= -minimum slope threshold
+```
 
-No Python packages are required to run the TradingView strategy. `requirements.txt` documents the platform dependency for repository consistency.
+The default slope threshold is **0.05 ATR**.
+
+If either LC state or slope fails on a candle, the consecutive confirmation count resets while the BBSR setup remains armed until the maximum confirmation window expires.
+
+---
+
+## Chart Theme
+
+ARES follows the simplified LC visual language:
+
+- Teal: bullish
+- Red: bearish
+- Gray: neutral
+- Small triangle: original BBSR arrow
+- Flag: confirmed ARES entry
+- X: trade exit
+- Subtle candle tint: a bar that currently passes both LC and slope confirmation
+
+TradingView's standard chart/table typography is used to stay visually consistent with LC.
+
+---
+
+## Entries and Exits
+
+The entry flag is the point where the full ARES confirmation sequence has completed.
+
+Exits use a simplified LC-style lifecycle:
+
+- maximum trade-bar duration;
+- optional early exit when LC flips to the opposite state;
+- optional session-end exit.
+
+The default maximum trade duration is **4 bars**, matching the four-bar horizon used by the LC model.
+
+---
+
+## Alert
+
+ARES uses a single functional entry alert.
+
+After adding the indicator to TradingView:
+
+1. Select **Create Alert**.
+2. Choose **ARES Confirmation Engine v3**.
+3. Select **Any alert() function call**.
+4. Use **Once Per Bar Close**.
+
+The alert only fires after the requested confirmation bars have passed both LC and slope checks.
+
+Messages identify either:
+
+- `ARES BUY`
+- `ARES SELL`
+
+Raw BBSR arrows do not trigger the ARES entry alert.
+
+---
+
+## LC-Style Trade Stats
+
+The compact stats panel uses the LC backtest helper and displays:
+
+- Win rate
+- Trades
+- Wins / losses
+- Win/loss ratio
+- Early LC flips
+- Current LC state
+- Current confirmation progress
+
+These statistics are intended for calibration rather than as a substitute for complete strategy testing.
 
 ---
 
 ## Main Controls
 
-| Group | Key controls |
+| Group | Controls |
 | --- | --- |
-| BBSR Extreme | Bollinger length, deviation, Stochastic smoothing, extreme thresholds |
-| Lorentzian Classification | Neighbors, history, features, prediction strength |
-| LC Filters | Volatility, regime, ADX, EMA, and SMA filters |
-| ARES Entry Logic | Wick or close crossing, setup delay, maximum setup age |
-| Price Slope Filter | Lookback, normalized threshold, directional bars, G gauge |
-| Strategy Exits | Opposite-signal reversal, fixed target, fixed stop |
+| BBSR | Bollinger settings, Stochastic RSI settings, extremes |
+| Trading Hours | Session window |
+| Lorentzian Classification | Neighbors, history, prediction threshold |
+| LC Filters | Volatility, regime, ADX, EMA, SMA |
+| LC Feature Engineering | RSI, WT, CCI, ADX parameters |
+| Confirmation Slope | Lookback, minimum normalized slope |
+| ARES Confirmation | Confirmation bars, maximum wait |
+| LC-Style Exits | Maximum bars, LC flip, session exit |
+| LC Trade Stats | Table and worst-case estimate |
 
 ---
 
-## Alerts
+## Files
 
-The script exposes three TradingView alert conditions:
-
-- `ARES BUY`
-- `ARES SELL`
-- `ARES ENTRY`
-
-For close-confirmed behavior, select `Confirmed Close Cross` and use **Once Per Bar Close** when creating the alert.
-
----
-
-## Risk and Limitations ⚠️
-
-- Historical results do not guarantee future performance.
-- `Aggressive Wick Cross` and `calc_on_every_tick=true` can behave differently in real time than on historical bars.
-- Fixed targets use the underlying chart price, not an option contract's premium.
-- Backtests do not automatically model realistic spreads, slippage, liquidity, option Greeks, or brokerage fills.
-- Settings optimized for one symbol or timeframe may be overfit.
-- The strategy depends on TradingView resolving `jdehorty/MLExtensions/2`.
-
-Always test across unseen periods and different market regimes before relying on any configuration.
-
----
-
-## Troubleshooting
-
-### End of line without line continuation
-
-Use the repository version of `get_lorentzian_distance()`. Each switch calculation intentionally stays on one line to avoid Pine's line-continuation error.
-
-### Imported library cannot be found
-
-Confirm the import is exactly:
-
-```pine
-import jdehorty/MLExtensions/2 as ml
-```
-
-### No trades appear
-
-- Confirm enough chart history is loaded.
-- Temporarily disable optional LC filters to identify the blocking gate.
-- Carefully reduce `Minimum ATR-Normalized Slope`.
-- Increase `Maximum Bars To Wait` if red-line attacks occur late.
+- `ARES_Redline_Engine_JXS.pine` — TradingView indicator
+- `ares_reference.py` — Python research companion
+- `THIRD_PARTY_NOTICES.md` — third-party attribution
+- `LICENSE` — MPL 2.0 license
 
 ---
 
 ## Author
 
-**JXS**
+**JXS**  
 GitHub: [@woi-6ix](https://github.com/woi-6ix)
 
 ## License and Attribution
 
-Licensed under the **Mozilla Public License 2.0**. See [`LICENSE`](./LICENSE) and [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md).
+Licensed under the **Mozilla Public License 2.0**.
 
-The Lorentzian Classification concept and portions of the ML logic are attributed to **jdehorty**. ARES strategy integration and modifications are identified in the source header.
+Lorentzian Classification concepts and portions of the ML logic are attributed to **jdehorty**. ARES integration and sequencing changes are identified in the source header.
