@@ -580,19 +580,7 @@ useWorstCase = input.bool(
 
 maxBarsBackIndex = last_bar_index >= maxBarsBack ? last_bar_index - maxBarsBack : 0
 
-[totalWins, totalLosses, totalEarlySignalFlips, totalTrades, tradeStatsHeader, winLossRatio, winRate] = ml.backtest(
-     high,
-     low,
-     open,
-     aresBuy,
-     endLongTrade,
-     aresSell,
-     endShortTrade,
-     isEarlySignalFlip,
-     maxBarsBackIndex,
-     bar_index,
-     lcSource,
-     useWorstCase)
+[totalWins, totalLosses, totalEarlySignalFlips, totalTrades, tradeStatsHeader, winLossRatio, winRate] = ml.backtest(high, low, open, aresBuy, endLongTrade, aresSell, endShortTrade, isEarlySignalFlip, maxBarsBackIndex, bar_index, lcSource, useWorstCase)
 
 var table statsTable = table.new(
      position.top_right,
