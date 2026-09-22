@@ -1,4 +1,4 @@
-# ARES Redline Engine 🔴⚔️
+# ARES Redline Engine
 
 ![Pine Script](https://img.shields.io/badge/Pine%20Script-v6-blue)
 ![Platform](https://img.shields.io/badge/Platform-TradingView-black)
@@ -15,7 +15,7 @@ The engine waits for a BBSR extreme, arms a directional setup, watches for price
 
 ---
 
-## 📌 Project Overview
+## Project Overview
 
 ARES is designed to reduce weak or contradictory entries. A setup is not enough on its own: the engine requires agreement between the BBSR sequence, the red-line trigger, Lorentzian classification, linear-regression slope, and recent directional bars.
 
@@ -23,7 +23,7 @@ The default slope configuration uses a five-bar linear regression, normalizes it
 
 ---
 
-## 🔍 What the Strategy Does
+## What the Strategy Does
 
 ### Long sequence
 
@@ -47,35 +47,38 @@ The default slope configuration uses a five-bar linear regression, normalizes it
 
 ---
 
-## ✨ Key Features
+## Key Features
 
-- 🔴 **Red-Line Entry Trigger**
+- **Red-Line Entry Trigger**
   Uses the Bollinger basis as the central attack/cross level.
 
-- 📉 **BBSR Extreme Detection**
+- **BBSR Extreme Detection**
   Combines Bollinger Band re-entry with Stochastic RSI extremes.
 
-- 🧠 **Lorentzian Classification State**
+- **Lorentzian Classification State**
   Uses RSI, WaveTrend, CCI, and ADX feature combinations with Lorentzian distance.
 
-- 📐 **Hard Slope Filter**
+- **Hard Slope Filter**
   Blocks longs unless the normalized slope is positive and blocks shorts unless it is negative.
 
-- 🕯️ **Directional-Bar Agreement**
+- **Post-Entry G Gauge**
+  Shows a simple `G+` or `G-` on the first bars after entry so adverse short-term direction is immediately visible.
+
+- **Directional-Bar Agreement**
   Requires a configurable number of recent bars to support the intended direction.
 
-- ⚔️ **Strategy Backtesting**
+- **Strategy Backtesting**
   Includes TradingView strategy entries, reversal controls, optional fixed profit target, and optional fixed stop loss.
 
-- 📊 **On-Chart Statistics**
+- **On-Chart Statistics**
   Displays position, armed setup, LC state, slope, directional bars, win rate, profit factor, P/L, and drawdown.
 
-- 🔔 **TradingView Alerts**
+- **TradingView Alerts**
   Provides individual BUY/SELL conditions and a combined ARES entry condition.
 
 ---
 
-## 🧠 Strategy Methodology
+## Strategy Methodology
 
 ### 1. BBSR extreme
 
@@ -126,6 +129,8 @@ Default requirements:
 | Directional-bar lookback | 5 bars |
 | Minimum matching bars | 3 bars |
 
+The optional post-entry G gauge uses the same raw regression slope without the minimum-strength threshold. By default, it marks the first four bars after each entry: `G+` means the immediate price slope is bullish and `G-` means it is bearish. A long followed by `G-`, or a short followed by `G+`, is an early caution signal rather than a separate strategy exit.
+
 A bullish setup with flat or negative slope is rejected. A bearish setup with flat or positive slope is also rejected.
 
 ### 6. Exits
@@ -142,7 +147,7 @@ These are underlying price distances—not option-premium targets—and must be 
 
 ---
 
-## 📊 Entry Requirements
+## Entry Requirements
 
 | Gate | Long | Short |
 | --- | --- | --- |
@@ -156,7 +161,7 @@ All gates are required. A valid BBSR + red-line + Lorentzian setup is ignored if
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```text
 ARES_Redline_Engine_JXS/
@@ -170,7 +175,7 @@ ARES_Redline_Engine_JXS/
 
 ---
 
-## 🛠️ Tech Stack
+## Tech Stack
 
 - TradingView
 - Pine Script v6
@@ -184,7 +189,7 @@ ARES_Redline_Engine_JXS/
 
 ---
 
-## 📦 Requirements
+## Requirements
 
 - A TradingView account with access to the Pine Editor and Strategy Tester
 - Pine Script v6
@@ -194,7 +199,7 @@ No Python installation or pip packages are required. `requirements.txt` is inclu
 
 ---
 
-## 🚀 Installation
+## Installation
 
 1. Open `ARES_Redline_Engine_JXS.pine`.
 2. Copy the complete source code.
@@ -213,7 +218,7 @@ cd ARES_Redline_Engine_JXS
 
 ---
 
-## 🎛️ Main Controls
+## Main Controls
 
 ### BBSR Extreme
 
@@ -251,7 +256,7 @@ cd ARES_Redline_Engine_JXS
 
 ---
 
-## 🔔 Alerts
+## Alerts
 
 The script exposes three alert conditions:
 
@@ -263,7 +268,7 @@ Create an alert in TradingView and select the required ARES condition. For close
 
 ---
 
-## ⚠️ Known Limitations
+## Known Limitations
 
 ### No strategy can be 100% accurate
 
@@ -291,7 +296,7 @@ Optimizing settings on one symbol or timeframe can produce fragile results. Vali
 
 ---
 
-## ⚠️ Troubleshooting
+## Troubleshooting
 
 ### End of line without line continuation
 
@@ -322,7 +327,7 @@ import jdehorty/MLExtensions/2 as ml
 
 ---
 
-## 📚 Learning Objectives
+## Learning Objectives
 
 This project demonstrates:
 
@@ -336,7 +341,7 @@ This project demonstrates:
 
 ---
 
-## 🗺️ Future Improvements
+## Future Improvements
 
 - Trading-session controls
 - Configurable commission and slippage presets
@@ -348,20 +353,20 @@ This project demonstrates:
 
 ---
 
-## ⚠️ Financial Disclaimer
+## Financial Disclaimer
 
 This repository is provided solely for educational, research, and backtesting purposes. It is not financial, investment, legal, or tax advice. Trading stocks, options, futures, forex, and digital assets involves substantial risk, including the possible loss of all capital. Always conduct independent research and use appropriate risk management.
 
 ---
 
-## 👨‍💻 Author
+## Author
 
 **JXS**
 GitHub: [@woi-6ix](https://github.com/woi-6ix)
 
 ---
 
-## 📜 License and Attribution
+## License and Attribution
 
 This project is licensed under the **Mozilla Public License 2.0**. See `LICENSE` for the complete terms and `THIRD_PARTY_NOTICES.md` for upstream attribution.
 
