@@ -132,10 +132,10 @@ The default maximum trade duration is **4 bars**, matching the four-bar horizon 
 
 ARES uses a single functional entry alert.
 
-After adding the indicator to TradingView:
+After adding either the indicator or strategy to TradingView:
 
 1. Select **Create Alert**.
-2. Choose **ARES Confirmation Engine v3**.
+2. Choose **ARES Confirmation Engine v3** or **ARES Confirmation Engine Strategy v3**.
 3. Select **Any alert() function call**.
 4. Use **Once Per Bar Close**.
 
@@ -162,7 +162,7 @@ The compact stats panel uses the LC backtest helper and displays:
 - Current LC state
 - Current confirmation progress
 
-These statistics are intended for calibration rather than as a substitute for complete strategy testing.
+These LC-style statistics are intended for calibration. The separate strategy file also exposes the same confirmed entries and LC-style exits directly to TradingView Strategy Tester.
 
 ---
 
@@ -185,6 +185,7 @@ These statistics are intended for calibration rather than as a substitute for co
 ## Files
 
 - `ARES_Redline_Engine_JXS.pine` — TradingView indicator
+- `ARES_Confirmation_Engine_Strategy_JXS.pine` — TradingView strategy / Strategy Tester version
 - `ares_reference.py` — Python research companion
 - `THIRD_PARTY_NOTICES.md` — third-party attribution
 - `LICENSE` — MPL 2.0 license
