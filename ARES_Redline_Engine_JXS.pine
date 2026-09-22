@@ -255,6 +255,8 @@ minSlopeStrength = input.float(0.05, "Minimum ATR-Normalized Slope", minval=0, s
 requireBarAgreement = input.bool(true, "Require Directional Bars", group=groupSlope)
 barAgreementLookback = input.int(5, "Directional Bar Lookback", minval=2, maxval=20, group=groupSlope)
 minimumDirectionalBars = input.int(3, "Minimum Matching Bars", minval=1, maxval=20, group=groupSlope)
+showGLabels = input.bool(true, "Show G+/G- After Entry", group=groupSlope)
+gBarsToShow = input.int(4, "G Label Bars", minval=1, maxval=10, tooltip="Number of bars after an ARES entry to display the current raw price-slope direction.", group=groupSlope)
 
 regressionNow = ta.linreg(close, slopeLookback, 0)
 regressionPrevious = ta.linreg(close, slopeLookback, 1)
@@ -297,10 +299,12 @@ stopLoss = input.float(0.10, "Stop Loss ($)", minval=0.01, step=0.01, group=grou
 
 longAllowed = reverseOnOpposite ? strategy.position_size <= 0 : strategy.position_size == 0
 shortAllowed = reverseOnOpposite ? strategy.position_size >= 0 : strategy.position_size == 0
+aresLongEntry = aresBuy and longAllowed
+aresShortEntry = aresSell and shortAllowed
 
-if aresBuy and longAllowed
+if aresLongEntry
     strategy.entry("ARES LONG", strategy.long)
-if aresSell and shortAllowed
+if aresShortEntry
     strategy.entry("ARES SHORT", strategy.short)
 
 if useFixedExit and strategy.position_size > 0
@@ -311,6 +315,34 @@ if useFixedExit and strategy.position_size < 0
 if aresBuy or aresSell
     armedDirection := 0
     armedBar := na
+
+// Track the raw short-term slope on the bars immediately following each entry.
+// G+ means price is leaning bullish; G- means price is leaning bearish.
+var int gTradeDirection = 0
+var int gBarsAfterEntry = 0
+
+if aresLongEntry
+    gTradeDirection := LONG_STATE
+    gBarsAfterEntry := 0
+else if aresShortEntry
+    gTradeDirection := SHORT_STATE
+    gBarsAfterEntry := 0
+else if gTradeDirection != NEUTRAL_STATE
+    gBarsAfterEntry += 1
+
+showGThisBar = showGLabels and gTradeDirection != NEUTRAL_STATE and gBarsAfterEntry >= 1 and gBarsAfterEntry <= gBarsToShow
+gBullish = priceSlope > 0
+gBearish = priceSlope < 0
+gLabelATR = ta.atr(1)
+
+if showGThisBar and gBullish
+    label.new(bar_index, high + gLabelATR * 0.35, "G+", xloc.bar_index, yloc.price, color.new(color.white, 100), label.style_none, #009988, size.normal, text.align_center)
+
+if showGThisBar and gBearish
+    label.new(bar_index, low - gLabelATR * 0.35, "G-", xloc.bar_index, yloc.price, color.new(color.white, 100), label.style_none, #CC3311, size.normal, text.align_center)
+
+if gTradeDirection != NEUTRAL_STATE and gBarsAfterEntry >= gBarsToShow
+    gTradeDirection := NEUTRAL_STATE
 
 // ============================================================================
 // 8. CHART VISUALS AND ALERTS
