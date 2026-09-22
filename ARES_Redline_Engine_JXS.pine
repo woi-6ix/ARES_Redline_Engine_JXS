@@ -2,63 +2,102 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 //
-// Lorentzian Classification concept and portions of the ML logic: © jdehorty
-// ARES strategy integration, BBSR sequencing, slope filter, exits, and panel: JXS
+// Lorentzian Classification concept and ML logic: © jdehorty
+// ARES BBSR sequencing, confirmation engine, slope filter, visuals, and alerts: JXS
 
 //@version=6
-strategy(
-     title="ARES Redline Engine Strategy v2 [BBSR + LC + Slope]",
-     shorttitle="ARES Redline v2",
+indicator(
+     title="ARES Confirmation Engine v3 [BBSR + LC + Slope]",
+     shorttitle="ARES v3",
      overlay=true,
-     pyramiding=0,
-     initial_capital=10000,
-     default_qty_type=strategy.percent_of_equity,
-     default_qty_value=100,
-     commission_type=strategy.commission.percent,
-     commission_value=0.0,
-     process_orders_on_close=true,
-     calc_on_every_tick=true,
+     precision=4,
      max_labels_count=500)
 
 import jdehorty/MLExtensions/2 as ml
 
 // ============================================================================
-// 1. BBSR EXTREME
+// ARES v3
+// ============================================================================
+//
+// Sequence:
+//
+// BBSR BULL / BEAR arrow
+//        ↓
+// wait for user-selected number of CONFIRMATION BARS
+//        ↓
+// every confirmation bar must agree with:
+//   1. Lorentzian Classification state
+//   2. ATR-normalized price slope
+//        ↓
+// confirmed entry flag
+//        ↓
+// LC-style X exit
+//
+// Entries are only armed and confirmed from 09:30 to 15:00 America/New_York.
+// Alerts fire ONLY on a completed ARES confirmation.
+//
 // ============================================================================
 
-groupBBSR = "1. BBSR Extreme"
+// ============================================================================
+// 1. THEME
+// ============================================================================
+
+bullColor = #009988
+bearColor = #CC3311
+neutralColor = #787B86
+transparent = color.new(#000000, 100)
+
+// ============================================================================
+// 2. BBSR
+// ============================================================================
+
+groupBBSR = "1. BBSR"
+
 bbSrc = input.source(close, "Source", group=groupBBSR)
-bbLength = input.int(20, "Bollinger Band Length", minval=1, group=groupBBSR)
+bbLength = input.int(20, "Bollinger Length", minval=1, group=groupBBSR)
 bbMult = input.float(2.0, "Bollinger StdDev", minval=0.001, maxval=50, group=groupBBSR)
+
 smoothK = input.int(3, "Stochastic K", minval=1, group=groupBBSR)
 smoothD = input.int(3, "Stochastic D", minval=1, group=groupBBSR)
 lengthRSI = input.int(14, "RSI Length", minval=1, group=groupBBSR)
 lengthStoch = input.int(14, "Stochastic Length", minval=1, group=groupBBSR)
+
 upperLimit = input.float(90.0, "Upper Extreme", minval=0, maxval=100, group=groupBBSR)
 lowerLimit = input.float(10.0, "Lower Extreme", minval=0, maxval=100, group=groupBBSR)
-showBBSRSignals = input.bool(true, "Show Original BBSR Signals", group=groupBBSR)
+
+showBBSRSignals = input.bool(true, "Show BBSR Arrows", group=groupBBSR)
+showBollingerBands = input.bool(false, "Show Bollinger Bands", group=groupBBSR)
 
 basis = ta.sma(bbSrc, bbLength)
 dev = bbMult * ta.stdev(bbSrc, bbLength)
 upper = basis + dev
 lower = basis - dev
-rsi1 = ta.rsi(bbSrc, lengthRSI)
-stochRSI = ta.stoch(rsi1, rsi1, rsi1, lengthStoch)
+
+rsiBBSR = ta.rsi(bbSrc, lengthRSI)
+stochRSI = ta.stoch(rsiBBSR, rsiBBSR, rsiBBSR, lengthStoch)
 k = ta.sma(stochRSI, smoothK)
 d = ta.sma(k, smoothD)
 
 bbsrBear = close[1] > upper[1] and close < upper and k[1] > upperLimit and d[1] > upperLimit
 bbsrBull = close[1] < lower[1] and close > lower and k[1] < lowerLimit and d[1] < lowerLimit
 
-plot(basis, title="ARES Red Line", color=color.rgb(180, 30, 30), linewidth=2)
-upperPlot = plot(upper, title="BB Upper", color=color.new(color.teal, 25))
-lowerPlot = plot(lower, title="BB Lower", color=color.new(color.teal, 25))
-fill(upperPlot, lowerPlot, title="BB Background", color=color.new(color.teal, 95))
-plotshape(showBBSRSignals and bbsrBull, title="BBSR Bull", style=shape.triangleup, location=location.belowbar, color=color.green, size=size.tiny, text="B")
-plotshape(showBBSRSignals and bbsrBear, title="BBSR Bear", style=shape.triangledown, location=location.abovebar, color=color.red, size=size.tiny, text="B")
+upperPlot = plot(showBollingerBands ? upper : na, title="BB Upper", color=color.new(neutralColor, 70))
+lowerPlot = plot(showBollingerBands ? lower : na, title="BB Lower", color=color.new(neutralColor, 70))
+plot(showBollingerBands ? basis : na, title="BB Basis", color=color.new(neutralColor, 45), linewidth=1)
+fill(upperPlot, lowerPlot, title="BB Fill", color=showBollingerBands ? color.new(neutralColor, 96) : na)
 
 // ============================================================================
-// 2. LORENTZIAN CLASSIFICATION TYPES AND FUNCTIONS
+// 3. TRADING SESSION
+// ============================================================================
+
+groupSession = "2. Trading Hours"
+
+tradeSession = input.session("0930-1500", "Trading Window", group=groupSession)
+inSession = not na(time(timeframe.period, tradeSession, "America/New_York"))
+sessionJustEnded = not inSession and inSession[1]
+
+// ============================================================================
+// 4. LORENTZIAN CLASSIFICATION TYPES + HELPERS
 // ============================================================================
 
 type FeatureArrays
@@ -78,12 +117,11 @@ type FeatureSeries
 series_from(string featureString, float _close, float _high, float _low, float _hlc3, int paramA, int paramB) =>
     switch featureString
         "RSI" => ml.n_rsi(_close, paramA, paramB)
-        "WT"  => ml.n_wt(_hlc3, paramA, paramB)
+        "WT" => ml.n_wt(_hlc3, paramA, paramB)
         "CCI" => ml.n_cci(_close, paramA, paramB)
         "ADX" => ml.n_adx(_high, _low, _close, paramA)
         => ml.n_rsi(_close, paramA, paramB)
 
-// Each switch branch stays on one line to avoid Pine line-continuation errors.
 get_lorentzian_distance(int i, int featureCount, FeatureSeries fs, FeatureArrays fa) =>
     switch featureCount
         5 => math.log(1 + math.abs(fs.f1 - array.get(fa.f1, i))) + math.log(1 + math.abs(fs.f2 - array.get(fa.f2, i))) + math.log(1 + math.abs(fs.f3 - array.get(fa.f3, i))) + math.log(1 + math.abs(fs.f4 - array.get(fa.f4, i))) + math.log(1 + math.abs(fs.f5 - array.get(fa.f5, i)))
@@ -93,40 +131,51 @@ get_lorentzian_distance(int i, int featureCount, FeatureSeries fs, FeatureArrays
         => 0.0
 
 // ============================================================================
-// 3. LC SETTINGS AND FEATURES
+// 5. LC SETTINGS
 // ============================================================================
 
-groupLC = "2. Lorentzian Classification"
-lcSource = input.source(close, "LC Source", group=groupLC)
+groupLC = "3. Lorentzian Classification"
+
+lcSource = input.source(close, "Source", group=groupLC)
 neighborsCount = input.int(8, "Neighbors Count", minval=1, maxval=100, group=groupLC)
 maxBarsBack = input.int(2000, "Max Bars Back", minval=100, group=groupLC)
 featureCount = input.int(5, "Feature Count", minval=2, maxval=5, group=groupLC)
-minPredictionStrength = input.float(0.0, "Minimum Prediction Strength", minval=0, step=1, tooltip="Higher values require stronger LC confirmation.", group=groupLC)
+minPredictionStrength = input.float(0.0, "Minimum Prediction Strength", minval=0, step=1, group=groupLC)
+includeFullHistory = input.bool(false, "Include Full History", group=groupLC)
 
-groupFilters = "3. LC Filters"
+groupFilters = "4. LC Filters"
+
 useVolatilityFilter = input.bool(true, "Use Volatility Filter", group=groupFilters)
 useRegimeFilter = input.bool(true, "Use Regime Filter", group=groupFilters)
 regimeThreshold = input.float(-0.1, "Regime Threshold", minval=-10, maxval=10, step=0.1, group=groupFilters)
+
 useADXFilter = input.bool(false, "Use ADX Filter", group=groupFilters)
 adxThreshold = input.int(20, "ADX Threshold", minval=0, maxval=100, group=groupFilters)
+
 useEMAFilter = input.bool(false, "Use EMA Filter", group=groupFilters)
 emaPeriod = input.int(200, "EMA Period", minval=1, group=groupFilters)
+
 useSMAFilter = input.bool(false, "Use SMA Filter", group=groupFilters)
 smaPeriod = input.int(200, "SMA Period", minval=1, group=groupFilters)
 
-groupFeatures = "4. LC Feature Engineering"
+groupFeatures = "5. LC Feature Engineering"
+
 f1String = input.string("RSI", "Feature 1", options=["RSI", "WT", "CCI", "ADX"], group=groupFeatures)
 f1A = input.int(14, "Feature 1 Parameter A", group=groupFeatures)
 f1B = input.int(1, "Feature 1 Parameter B", group=groupFeatures)
+
 f2String = input.string("WT", "Feature 2", options=["RSI", "WT", "CCI", "ADX"], group=groupFeatures)
 f2A = input.int(10, "Feature 2 Parameter A", group=groupFeatures)
 f2B = input.int(11, "Feature 2 Parameter B", group=groupFeatures)
+
 f3String = input.string("CCI", "Feature 3", options=["RSI", "WT", "CCI", "ADX"], group=groupFeatures)
 f3A = input.int(20, "Feature 3 Parameter A", group=groupFeatures)
 f3B = input.int(1, "Feature 3 Parameter B", group=groupFeatures)
+
 f4String = input.string("ADX", "Feature 4", options=["RSI", "WT", "CCI", "ADX"], group=groupFeatures)
 f4A = input.int(20, "Feature 4 Parameter A", group=groupFeatures)
 f4B = input.int(2, "Feature 4 Parameter B", group=groupFeatures)
+
 f5String = input.string("RSI", "Feature 5", options=["RSI", "WT", "CCI", "ADX"], group=groupFeatures)
 f5A = input.int(9, "Feature 5 Parameter A", group=groupFeatures)
 f5B = input.int(1, "Feature 5 Parameter B", group=groupFeatures)
@@ -143,15 +192,17 @@ var f2Array = array.new_float()
 var f3Array = array.new_float()
 var f4Array = array.new_float()
 var f5Array = array.new_float()
+
 array.push(f1Array, featureSeries.f1)
 array.push(f2Array, featureSeries.f2)
 array.push(f3Array, featureSeries.f3)
 array.push(f4Array, featureSeries.f4)
 array.push(f5Array, featureSeries.f5)
+
 featureArrays = FeatureArrays.new(f1Array, f2Array, f3Array, f4Array, f5Array)
 
 // ============================================================================
-// 4. LC NEIGHBOR SEARCH AND STATE
+// 6. LC PREDICTION STATE
 // ============================================================================
 
 LONG_STATE = 1
@@ -159,40 +210,48 @@ SHORT_STATE = -1
 NEUTRAL_STATE = 0
 
 yTrainSeries = lcSource[4] < lcSource ? SHORT_STATE : lcSource[4] > lcSource ? LONG_STATE : NEUTRAL_STATE
+
 var yTrainArray = array.new_int()
 array.push(yTrainArray, yTrainSeries)
 
 var predictions = array.new_float()
 var distances = array.new_float()
+
 array.clear(predictions)
 array.clear(distances)
 
 float lastDistance = -1.0
-int historySize = array.size(yTrainArray)
-int searchStart = math.max(0, historySize - maxBarsBack)
-int searchEnd = historySize - 2
+
+historySize = array.size(yTrainArray)
+recentStart = math.max(0, historySize - maxBarsBack)
+searchStart = includeFullHistory ? 0 : recentStart
+searchEnd = historySize - 2
 
 if historySize > 5 and searchEnd >= searchStart
     for i = searchStart to searchEnd
-        float currentDistance = get_lorentzian_distance(i, featureCount, featureSeries, featureArrays)
+        currentDistance = get_lorentzian_distance(i, featureCount, featureSeries, featureArrays)
         if not na(currentDistance) and currentDistance >= lastDistance and i % 4 != 0
             lastDistance := currentDistance
             array.push(distances, currentDistance)
             array.push(predictions, float(array.get(yTrainArray, i)))
+
             if array.size(predictions) > neighborsCount
-                int qIndex = int(math.floor(neighborsCount * 0.75))
+                qIndex = int(math.floor(neighborsCount * 0.75))
                 qIndex := math.max(0, math.min(qIndex, array.size(distances) - 1))
                 lastDistance := array.get(distances, qIndex)
                 array.shift(distances)
                 array.shift(predictions)
 
-float lcPrediction = array.size(predictions) > 0 ? array.sum(predictions) : 0.0
+lcPrediction = array.size(predictions) > 0 ? array.sum(predictions) : 0.0
+
 volatilityFilter = ml.filter_volatility(1, 10, useVolatilityFilter)
 regimeFilter = ml.regime_filter(ohlc4, regimeThreshold, useRegimeFilter)
 adxFilter = ml.filter_adx(lcSource, 14, adxThreshold, useADXFilter)
+
 filterAll = volatilityFilter and regimeFilter and adxFilter
 
 var int lcState = NEUTRAL_STATE
+
 if lcPrediction > 0 and filterAll
     lcState := LONG_STATE
 else if lcPrediction < 0 and filterAll
@@ -202,232 +261,372 @@ else
 
 ema = ta.ema(close, emaPeriod)
 sma = ta.sma(close, smaPeriod)
+
 emaBull = not useEMAFilter or close > ema
 emaBear = not useEMAFilter or close < ema
 smaBull = not useSMAFilter or close > sma
 smaBear = not useSMAFilter or close < sma
+
 lcBullConfirmed = lcState == LONG_STATE and math.abs(lcPrediction) >= minPredictionStrength and emaBull and smaBull
 lcBearConfirmed = lcState == SHORT_STATE and math.abs(lcPrediction) >= minPredictionStrength and emaBear and smaBear
 
 // ============================================================================
-// 5. ARES ENTRY SEQUENCING
+// 7. SLOPE CONFIRMATION
 // ============================================================================
 
-groupARES = "5. ARES Entry Logic"
-crossMode = input.string("Aggressive Wick Cross", "Red Line Cross Mode", options=["Aggressive Wick Cross", "Confirmed Close Cross"], group=groupARES)
-minimumBarsAfterSignal = input.int(1, "Minimum Bars After BBSR Signal", minval=0, group=groupARES)
-maximumBarsAfterSignal = input.int(20, "Maximum Bars To Wait", minval=1, group=groupARES)
-showArmedState = input.bool(true, "Show Armed Setup", group=groupARES)
-showLCState = input.bool(false, "Show LC State", group=groupARES)
+groupSlope = "6. Confirmation Slope"
 
-var int armedDirection = 0
-var int armedBar = na
-
-if bbsrBull
-    armedDirection := 1
-    armedBar := bar_index
-if bbsrBear
-    armedDirection := -1
-    armedBar := bar_index
-
-int setupAge = na(armedBar) ? 999999 : bar_index - armedBar
-if armedDirection != 0 and setupAge > maximumBarsAfterSignal
-    armedDirection := 0
-    armedBar := na
-
-bullSetupReady = armedDirection == 1 and setupAge >= minimumBarsAfterSignal and setupAge <= maximumBarsAfterSignal
-bearSetupReady = armedDirection == -1 and setupAge >= minimumBarsAfterSignal and setupAge <= maximumBarsAfterSignal
-aggressiveBullCross = close[1] < basis[1] and high >= basis
-aggressiveBearCross = close[1] > basis[1] and low <= basis
-confirmedBullCross = ta.crossover(close, basis)
-confirmedBearCross = ta.crossunder(close, basis)
-bullRedlineCross = crossMode == "Aggressive Wick Cross" ? aggressiveBullCross : confirmedBullCross
-bearRedlineCross = crossMode == "Aggressive Wick Cross" ? aggressiveBearCross : confirmedBearCross
-
-// ============================================================================
-// 6. HARD PRICE-SLOPE AND BAR-AGREEMENT FILTER
-// ============================================================================
-
-groupSlope = "6. Price Slope Filter"
-useSlopeFilter = input.bool(true, "Use Slope Filter", tooltip="Rejects entries when recent price slope disagrees with the intended direction.", group=groupSlope)
 slopeLookback = input.int(5, "Slope Lookback", minval=2, maxval=50, group=groupSlope)
 minSlopeStrength = input.float(0.05, "Minimum ATR-Normalized Slope", minval=0, step=0.01, group=groupSlope)
-requireBarAgreement = input.bool(true, "Require Directional Bars", group=groupSlope)
-barAgreementLookback = input.int(5, "Directional Bar Lookback", minval=2, maxval=20, group=groupSlope)
-minimumDirectionalBars = input.int(3, "Minimum Matching Bars", minval=1, maxval=20, group=groupSlope)
-showGLabels = input.bool(true, "Show G+/G- After Entry", group=groupSlope)
-gBarsToShow = input.int(4, "G Label Bars", minval=1, maxval=10, tooltip="Number of bars after an ARES entry to display the current raw price-slope direction.", group=groupSlope)
 
 regressionNow = ta.linreg(close, slopeLookback, 0)
 regressionPrevious = ta.linreg(close, slopeLookback, 1)
 priceSlope = regressionNow - regressionPrevious
+
 slopeATR = ta.atr(14)
 normalizedSlope = slopeATR > 0 ? priceSlope / slopeATR : 0.0
 
-int bullishBarCount = 0
-int bearishBarCount = 0
-for i = 0 to barAgreementLookback - 1
-    if close[i] > close[i + 1]
-        bullishBarCount += 1
-    if close[i] < close[i + 1]
-        bearishBarCount += 1
-
-int requiredDirectionalBars = math.min(minimumDirectionalBars, barAgreementLookback)
-bullBarAgreement = not requireBarAgreement or bullishBarCount >= requiredDirectionalBars
-bearBarAgreement = not requireBarAgreement or bearishBarCount >= requiredDirectionalBars
-bullSlopeGood = not useSlopeFilter or (normalizedSlope >= minSlopeStrength and bullBarAgreement)
-bearSlopeGood = not useSlopeFilter or (normalizedSlope <= -minSlopeStrength and bearBarAgreement)
-
-strongBullSlope = normalizedSlope >= minSlopeStrength
-strongBearSlope = normalizedSlope <= -minSlopeStrength
-slopeStateText = strongBullSlope and bullBarAgreement ? "STRONG UP" : strongBearSlope and bearBarAgreement ? "STRONG DOWN" : normalizedSlope > 0 ? "WEAK UP" : normalizedSlope < 0 ? "WEAK DOWN" : "FLAT"
-slopeStateColor = strongBullSlope and bullBarAgreement ? color.lime : strongBearSlope and bearBarAgreement ? color.red : color.orange
-
-// Every gate is a hard requirement for a strategy entry.
-aresBuy = bullSetupReady and bullRedlineCross and lcBullConfirmed and bullSlopeGood
-aresSell = bearSetupReady and bearRedlineCross and lcBearConfirmed and bearSlopeGood
+bullSlopeConfirmed = normalizedSlope >= minSlopeStrength
+bearSlopeConfirmed = normalizedSlope <= -minSlopeStrength
 
 // ============================================================================
-// 7. STRATEGY EXECUTION AND EXITS
+// 8. ARES CONFIRMATION ENGINE
 // ============================================================================
 
-groupExit = "7. Strategy Exits"
-reverseOnOpposite = input.bool(true, "Reverse On Opposite ARES Signal", group=groupExit)
-useFixedExit = input.bool(false, "Use Fixed TP / SL", group=groupExit)
-profitTarget = input.float(0.50, "Profit Target ($)", minval=0.01, step=0.01, group=groupExit)
-stopLoss = input.float(0.10, "Stop Loss ($)", minval=0.01, step=0.01, group=groupExit)
+groupARES = "7. ARES Confirmation"
 
-longAllowed = reverseOnOpposite ? strategy.position_size <= 0 : strategy.position_size == 0
-shortAllowed = reverseOnOpposite ? strategy.position_size >= 0 : strategy.position_size == 0
-aresLongEntry = aresBuy and longAllowed
-aresShortEntry = aresSell and shortAllowed
+confirmationBarsRequired = input.int(
+     2,
+     "Required Consecutive Confirmation Bars",
+     minval=1,
+     maxval=20,
+     group=groupARES,
+     tooltip="After a BBSR arrow, every confirmation bar must have matching LC state and matching slope.")
 
-if aresLongEntry
-    strategy.entry("ARES LONG", strategy.long)
-if aresShortEntry
-    strategy.entry("ARES SHORT", strategy.short)
+maxBarsToConfirm = input.int(
+     12,
+     "Maximum Bars To Confirm",
+     minval=1,
+     maxval=100,
+     group=groupARES)
 
-if useFixedExit and strategy.position_size > 0
-    strategy.exit("ARES LONG EXIT", from_entry="ARES LONG", limit=strategy.position_avg_price + profitTarget, stop=strategy.position_avg_price - stopLoss)
-if useFixedExit and strategy.position_size < 0
-    strategy.exit("ARES SHORT EXIT", from_entry="ARES SHORT", limit=strategy.position_avg_price - profitTarget, stop=strategy.position_avg_price + stopLoss)
+showConfirmationBars = input.bool(
+     true,
+     "Highlight Valid Confirmation Bars",
+     group=groupARES)
 
-if aresBuy or aresSell
-    armedDirection := 0
+var int armedDirection = NEUTRAL_STATE
+var int armedBar = na
+var int confirmationCount = 0
+
+var int activeTrade = NEUTRAL_STATE
+var int entryBar = na
+
+// Only a BBSR arrow inside the session can arm ARES.
+// New setups are ignored while a trade is active.
+if barstate.isconfirmed and inSession and activeTrade == NEUTRAL_STATE
+    if bbsrBull
+        armedDirection := LONG_STATE
+        armedBar := bar_index
+        confirmationCount := 0
+    else if bbsrBear
+        armedDirection := SHORT_STATE
+        armedBar := bar_index
+        confirmationCount := 0
+
+setupAge = not na(armedBar) ? bar_index - armedBar : na
+
+if armedDirection != NEUTRAL_STATE and not na(setupAge) and setupAge > maxBarsToConfirm
+    armedDirection := NEUTRAL_STATE
     armedBar := na
+    confirmationCount := 0
 
-// Track the raw short-term slope on the bars immediately following each entry.
-// G+ means price is leaning bullish; G- means price is leaning bearish.
-var int gTradeDirection = 0
-var int gBarsAfterEntry = 0
+if not inSession and activeTrade == NEUTRAL_STATE
+    armedDirection := NEUTRAL_STATE
+    armedBar := na
+    confirmationCount := 0
 
-if aresLongEntry
-    gTradeDirection := LONG_STATE
-    gBarsAfterEntry := 0
-else if aresShortEntry
-    gTradeDirection := SHORT_STATE
-    gBarsAfterEntry := 0
-else if gTradeDirection != NEUTRAL_STATE
-    gBarsAfterEntry += 1
+bullConfirmationBar =
+     barstate.isconfirmed and
+     inSession and
+     activeTrade == NEUTRAL_STATE and
+     armedDirection == LONG_STATE and
+     not na(armedBar) and
+     bar_index > armedBar and
+     lcBullConfirmed and
+     bullSlopeConfirmed
 
-showGThisBar = showGLabels and gTradeDirection != NEUTRAL_STATE and gBarsAfterEntry >= 1 and gBarsAfterEntry <= gBarsToShow
-gBullish = priceSlope > 0
-gBearish = priceSlope < 0
-gLabelATR = ta.atr(1)
+bearConfirmationBar =
+     barstate.isconfirmed and
+     inSession and
+     activeTrade == NEUTRAL_STATE and
+     armedDirection == SHORT_STATE and
+     not na(armedBar) and
+     bar_index > armedBar and
+     lcBearConfirmed and
+     bearSlopeConfirmed
 
-if showGThisBar and gBullish
-    label.new(bar_index, high + gLabelATR * 0.35, "G+", xloc.bar_index, yloc.price, color.new(color.white, 100), label.style_none, #009988, size.normal, text.align_center)
+if armedDirection == LONG_STATE and not na(armedBar) and bar_index > armedBar
+    if bullConfirmationBar
+        confirmationCount += 1
+    else
+        confirmationCount := 0
 
-if showGThisBar and gBearish
-    label.new(bar_index, low - gLabelATR * 0.35, "G-", xloc.bar_index, yloc.price, color.new(color.white, 100), label.style_none, #CC3311, size.normal, text.align_center)
+if armedDirection == SHORT_STATE and not na(armedBar) and bar_index > armedBar
+    if bearConfirmationBar
+        confirmationCount += 1
+    else
+        confirmationCount := 0
 
-if gTradeDirection != NEUTRAL_STATE and gBarsAfterEntry >= gBarsToShow
-    gTradeDirection := NEUTRAL_STATE
+aresBuy =
+     activeTrade == NEUTRAL_STATE and
+     armedDirection == LONG_STATE and
+     confirmationCount >= confirmationBarsRequired and
+     bullConfirmationBar
+
+aresSell =
+     activeTrade == NEUTRAL_STATE and
+     armedDirection == SHORT_STATE and
+     confirmationCount >= confirmationBarsRequired and
+     bearConfirmationBar
 
 // ============================================================================
-// 8. CHART VISUALS AND ALERTS
+// 9. LC-STYLE TRADE LIFECYCLE + X EXITS
 // ============================================================================
 
-bgcolor(showArmedState and armedDirection == 1 ? color.new(color.green, 93) : na, title="Bull Setup Armed")
-bgcolor(showArmedState and armedDirection == -1 ? color.new(color.red, 93) : na, title="Bear Setup Armed")
-plotshape(aresBuy, title="ARES BUY", style=shape.labelup, location=location.belowbar, color=color.lime, textcolor=color.black, size=size.small, text="ARES\nBUY")
-plotshape(aresSell, title="ARES SELL", style=shape.labeldown, location=location.abovebar, color=color.red, textcolor=color.white, size=size.small, text="ARES\nSELL")
-plotshape(showLCState and lcBullConfirmed, title="LC Bull", style=shape.circle, location=location.belowbar, color=color.new(color.green, 50), size=size.tiny)
-plotshape(showLCState and lcBearConfirmed, title="LC Bear", style=shape.circle, location=location.abovebar, color=color.new(color.red, 50), size=size.tiny)
-plot(useEMAFilter ? ema : na, title="LC EMA Filter", color=color.orange)
-plot(useSMAFilter ? sma : na, title="LC SMA Filter", color=color.blue)
+groupExit = "8. LC-Style Exits"
 
-alertcondition(aresBuy, title="ARES BUY", message="ARES BUY | {{ticker}} | {{interval}} | {{close}}")
-alertcondition(aresSell, title="ARES SELL", message="ARES SELL | {{ticker}} | {{interval}} | {{close}}")
-alertcondition(aresBuy or aresSell, title="ARES ENTRY", message="ARES ENTRY | {{ticker}} | {{interval}} | {{close}}")
+exitBars = input.int(
+     4,
+     "Maximum Trade Bars",
+     minval=1,
+     maxval=100,
+     group=groupExit,
+     tooltip="The original LC model is trained around a four-bar horizon, so 4 is the default.")
+
+exitOnOppositeLC = input.bool(
+     true,
+     "Exit Early On Opposite LC State",
+     group=groupExit)
+
+exitAtSessionEnd = input.bool(
+     true,
+     "Exit At 3:00 PM",
+     group=groupExit)
+
+tradeAge = activeTrade != NEUTRAL_STATE and not na(entryBar) ? bar_index - entryBar : na
+
+endLongTrade =
+     activeTrade == LONG_STATE and
+     (
+         (not na(tradeAge) and tradeAge >= exitBars) or
+         (exitOnOppositeLC and lcBearConfirmed) or
+         (exitAtSessionEnd and sessionJustEnded)
+     )
+
+endShortTrade =
+     activeTrade == SHORT_STATE and
+     (
+         (not na(tradeAge) and tradeAge >= exitBars) or
+         (exitOnOppositeLC and lcBullConfirmed) or
+         (exitAtSessionEnd and sessionJustEnded)
+     )
+
+isEarlySignalFlip =
+     (activeTrade == LONG_STATE and not na(tradeAge) and tradeAge < exitBars and lcBearConfirmed) or
+     (activeTrade == SHORT_STATE and not na(tradeAge) and tradeAge < exitBars and lcBullConfirmed)
+
+// Exit first.
+if endLongTrade or endShortTrade
+    activeTrade := NEUTRAL_STATE
+    entryBar := na
+
+// Then accept a newly confirmed ARES entry.
+if aresBuy
+    activeTrade := LONG_STATE
+    entryBar := bar_index
+    armedDirection := NEUTRAL_STATE
+    armedBar := na
+    confirmationCount := 0
+
+if aresSell
+    activeTrade := SHORT_STATE
+    entryBar := bar_index
+    armedDirection := NEUTRAL_STATE
+    armedBar := na
+    confirmationCount := 0
 
 // ============================================================================
-// 9. STATS PANEL
+// 10. LC-STYLE VISUALS
 // ============================================================================
 
-groupStats = "8. Stats Panel"
-showStats = input.bool(true, "Show Stats Panel", group=groupStats)
-statsLocation = input.string("Top Right", "Panel Location", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group=groupStats)
-statsPosition = statsLocation == "Top Left" ? position.top_left : statsLocation == "Bottom Right" ? position.bottom_right : statsLocation == "Bottom Left" ? position.bottom_left : position.top_right
+plotshape(
+     showBBSRSignals and inSession and bbsrBull,
+     title="BBSR Bull",
+     style=shape.triangleup,
+     location=location.belowbar,
+     color=bullColor,
+     size=size.tiny,
+     text="B",
+     textcolor=color.black)
 
-closedTrades = strategy.closedtrades
-winningTrades = strategy.wintrades
-losingTrades = strategy.losstrades
-winRate = closedTrades > 0 ? winningTrades / closedTrades * 100.0 : 0.0
-grossLossAbsolute = math.abs(strategy.grossloss)
-profitFactor = grossLossAbsolute > 0 ? strategy.grossprofit / grossLossAbsolute : na
-averageTrade = closedTrades > 0 ? strategy.netprofit / closedTrades : 0.0
+plotshape(
+     showBBSRSignals and inSession and bbsrBear,
+     title="BBSR Bear",
+     style=shape.triangledown,
+     location=location.abovebar,
+     color=bearColor,
+     size=size.tiny,
+     text="B",
+     textcolor=color.white)
 
-var float peakEquity = strategy.equity
-peakEquity := math.max(peakEquity, strategy.equity)
-currentDrawdown = peakEquity - strategy.equity
-var float maximumDrawdown = 0.0
-maximumDrawdown := math.max(maximumDrawdown, currentDrawdown)
+plotshape(
+     aresBuy,
+     title="ARES Buy Flag",
+     style=shape.flag,
+     location=location.belowbar,
+     color=bullColor,
+     size=size.small,
+     text="BUY",
+     textcolor=color.black)
 
-positionText = strategy.position_size > 0 ? "LONG" : strategy.position_size < 0 ? "SHORT" : "FLAT"
-positionColor = strategy.position_size > 0 ? color.lime : strategy.position_size < 0 ? color.red : color.gray
-armedText = armedDirection == 1 ? "BULL ARMED" : armedDirection == -1 ? "BEAR ARMED" : "NONE"
-armedColor = armedDirection == 1 ? color.lime : armedDirection == -1 ? color.red : color.gray
-lcText = lcBullConfirmed ? "BULLISH" : lcBearConfirmed ? "BEARISH" : "NEUTRAL"
-lcColor = lcBullConfirmed ? color.lime : lcBearConfirmed ? color.red : color.gray
-barCountText = "UP " + str.tostring(bullishBarCount) + " / DOWN " + str.tostring(bearishBarCount)
+plotshape(
+     aresSell,
+     title="ARES Sell Flag",
+     style=shape.flag,
+     location=location.abovebar,
+     color=bearColor,
+     size=size.small,
+     text="SELL",
+     textcolor=color.white)
 
-var table statsTable = table.new(statsPosition, 2, 18, border_width=1, frame_width=1)
+plotshape(
+     endLongTrade,
+     title="ARES Exit Long",
+     style=shape.xcross,
+     location=location.abovebar,
+     color=bullColor,
+     size=size.small)
 
-if barstate.islast and showStats
-    table.cell(statsTable, 0, 0, "ARES REDLINE", text_color=color.white, bgcolor=color.rgb(125, 20, 20))
-    table.cell(statsTable, 1, 0, "v2", text_color=color.white, bgcolor=color.rgb(125, 20, 20))
-    table.cell(statsTable, 0, 1, "Position")
-    table.cell(statsTable, 1, 1, positionText, text_color=positionColor)
-    table.cell(statsTable, 0, 2, "BBSR Setup")
-    table.cell(statsTable, 1, 2, armedText, text_color=armedColor)
-    table.cell(statsTable, 0, 3, "LC State")
-    table.cell(statsTable, 1, 3, lcText, text_color=lcColor)
-    table.cell(statsTable, 0, 4, "LC Score")
-    table.cell(statsTable, 1, 4, str.tostring(lcPrediction, "#"))
-    table.cell(statsTable, 0, 5, "Price Slope")
-    table.cell(statsTable, 1, 5, slopeStateText, text_color=slopeStateColor)
-    table.cell(statsTable, 0, 6, "Slope Strength")
-    table.cell(statsTable, 1, 6, str.tostring(normalizedSlope, "#.###"))
-    table.cell(statsTable, 0, 7, "Directional Bars")
-    table.cell(statsTable, 1, 7, barCountText)
-    table.cell(statsTable, 0, 8, "Closed Trades")
-    table.cell(statsTable, 1, 8, str.tostring(closedTrades))
-    table.cell(statsTable, 0, 9, "Wins")
-    table.cell(statsTable, 1, 9, str.tostring(winningTrades), text_color=color.lime)
-    table.cell(statsTable, 0, 10, "Losses")
-    table.cell(statsTable, 1, 10, str.tostring(losingTrades), text_color=color.red)
-    table.cell(statsTable, 0, 11, "Win Rate")
-    table.cell(statsTable, 1, 11, str.tostring(winRate, "#.##") + "%")
-    table.cell(statsTable, 0, 12, "Profit Factor")
-    table.cell(statsTable, 1, 12, na(profitFactor) ? "N/A" : str.tostring(profitFactor, "#.##"))
-    table.cell(statsTable, 0, 13, "Net P/L")
-    table.cell(statsTable, 1, 13, str.tostring(strategy.netprofit, "#.##"), text_color=strategy.netprofit >= 0 ? color.lime : color.red)
-    table.cell(statsTable, 0, 14, "Gross Profit")
-    table.cell(statsTable, 1, 14, str.tostring(strategy.grossprofit, "#.##"), text_color=color.lime)
-    table.cell(statsTable, 0, 15, "Gross Loss")
-    table.cell(statsTable, 1, 15, str.tostring(strategy.grossloss, "#.##"), text_color=color.red)
-    table.cell(statsTable, 0, 16, "Avg Trade")
-    table.cell(statsTable, 1, 16, str.tostring(averageTrade, "#.##"))
-    table.cell(statsTable, 0, 17, "Max Drawdown")
-    table.cell(statsTable, 1, 17, str.tostring(maximumDrawdown, "#.##"), text_color=color.orange)
+plotshape(
+     endShortTrade,
+     title="ARES Exit Short",
+     style=shape.xcross,
+     location=location.belowbar,
+     color=bearColor,
+     size=size.small)
+
+confirmationBarColor =
+     bullConfirmationBar ? color.new(bullColor, 55) :
+     bearConfirmationBar ? color.new(bearColor, 55) :
+     na
+
+barcolor(showConfirmationBars ? confirmationBarColor : na)
+
+plot(useEMAFilter ? ema : na, title="LC EMA", color=color.new(neutralColor, 25))
+plot(useSMAFilter ? sma : na, title="LC SMA", color=color.new(neutralColor, 55))
+
+// ============================================================================
+// 11. SINGLE ENTRY ALERT
+// ============================================================================
+//
+// Create ONE TradingView alert:
+// Condition -> ARES Confirmation Engine v3 -> Any alert() function call
+//
+// It only fires AFTER all requested confirmation bars have passed BOTH
+// the LC-state filter and slope filter.
+//
+
+if aresBuy
+    alert(
+         "ARES BUY | " +
+         syminfo.ticker +
+         " | " +
+         timeframe.period +
+         " | " +
+         str.tostring(confirmationBarsRequired) +
+         " confirmation bars complete | Price: " +
+         str.tostring(close, format.mintick),
+         alert.freq_once_per_bar_close)
+
+else if aresSell
+    alert(
+         "ARES SELL | " +
+         syminfo.ticker +
+         " | " +
+         timeframe.period +
+         " | " +
+         str.tostring(confirmationBarsRequired) +
+         " confirmation bars complete | Price: " +
+         str.tostring(close, format.mintick),
+         alert.freq_once_per_bar_close)
+
+// ============================================================================
+// 12. LC TRADE STATS
+// ============================================================================
+
+groupStats = "9. LC Trade Stats"
+
+showTradeStats = input.bool(
+     true,
+     "Show Trade Stats",
+     group=groupStats,
+     tooltip="Calibration statistics in the same style as Lorentzian Classification. Not a replacement for full strategy backtesting.")
+
+useWorstCase = input.bool(
+     false,
+     "Use Worst Case Estimates",
+     group=groupStats)
+
+maxBarsBackIndex = last_bar_index >= maxBarsBack ? last_bar_index - maxBarsBack : 0
+
+[totalWins, totalLosses, totalEarlySignalFlips, totalTrades, tradeStatsHeader, winLossRatio, winRate] = ml.backtest(
+     high,
+     low,
+     open,
+     aresBuy,
+     endLongTrade,
+     aresSell,
+     endShortTrade,
+     isEarlySignalFlip,
+     maxBarsBackIndex,
+     bar_index,
+     lcSource,
+     useWorstCase)
+
+var table statsTable = table.new(
+     position.top_right,
+     columns=2,
+     rows=7,
+     frame_color=color.new(color.black, 100),
+     frame_width=1,
+     border_width=1,
+     border_color=color.new(color.black, 100))
+
+if barstate.islast and showTradeStats
+    winRateText = totalTrades > 0 ? str.tostring(totalWins / totalTrades, "#.#%") : "N/A"
+    tradeText = str.tostring(totalTrades, "#") + " (" + str.tostring(totalWins, "#") + "|" + str.tostring(totalLosses, "#") + ")"
+    wlText = totalLosses > 0 ? str.tostring(totalWins / totalLosses, "0.00") : totalWins > 0 ? "∞" : "N/A"
+    lcStateText = lcBullConfirmed ? "BULL" : lcBearConfirmed ? "BEAR" : "NEUTRAL"
+    lcStateColor = lcBullConfirmed ? bullColor : lcBearConfirmed ? bearColor : neutralColor
+
+    table.cell(statsTable, 0, 0, "ARES / LC", text_halign=text.align_center, text_color=color.gray, text_size=size.normal)
+    table.cell(statsTable, 1, 0, tradeStatsHeader, text_halign=text.align_center, text_color=color.gray, text_size=size.normal)
+
+    table.cell(statsTable, 0, 1, "Winrate", text_halign=text.align_center, text_color=color.gray, text_size=size.normal)
+    table.cell(statsTable, 1, 1, winRateText, text_halign=text.align_center, text_color=color.gray, text_size=size.normal)
+
+    table.cell(statsTable, 0, 2, "Trades", text_halign=text.align_center, text_color=color.gray, text_size=size.normal)
+    table.cell(statsTable, 1, 2, tradeText, text_halign=text.align_center, text_color=color.gray, text_size=size.normal)
+
+    table.cell(statsTable, 0, 3, "WL Ratio", text_halign=text.align_center, text_color=color.gray, text_size=size.normal)
+    table.cell(statsTable, 1, 3, wlText, text_halign=text.align_center, text_color=color.gray, text_size=size.normal)
+
+    table.cell(statsTable, 0, 4, "Early Flips", text_halign=text.align_center, text_color=color.gray, text_size=size.normal)
+    table.cell(statsTable, 1, 4, str.tostring(totalEarlySignalFlips, "#"), text_halign=text.align_center, text_color=color.gray, text_size=size.normal)
+
+    table.cell(statsTable, 0, 5, "LC State", text_halign=text.align_center, text_color=color.gray, text_size=size.normal)
+    table.cell(statsTable, 1, 5, lcStateText, text_halign=text.align_center, text_color=lcStateColor, text_size=size.normal)
+
+    table.cell(statsTable, 0, 6, "Confirm", text_halign=text.align_center, text_color=color.gray, text_size=size.normal)
+    table.cell(statsTable, 1, 6, str.tostring(confirmationCount) + "/" + str.tostring(confirmationBarsRequired), text_halign=text.align_center, text_color=color.gray, text_size=size.normal)
