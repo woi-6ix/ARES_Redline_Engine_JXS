@@ -1,0 +1,4 @@
+# No Python packages are required.
+# Runtime: TradingView Pine Script v6
+# Pine library dependency (imported in the script):
+# jdehorty/MLExtensions/2
