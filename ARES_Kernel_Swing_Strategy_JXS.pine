@@ -29,14 +29,18 @@ tradeSession = input.session("0930-1500:23456", "New entry window (New York)", g
 // Existing positions remain open beyond 15:00 until an opposite color change
 // or, when enabled, an R bracket fills. Exits can occur outside the window.
 
-groupRisk = "3. Optional R Target"
+groupConfirmation = "3. Entry Confirmation"
+confirmationBars = input.int(4, "Consecutive color bars", minval=1, group=groupConfirmation,
+     tooltip="The color-change bar counts as bar 1. Default 4 means the kernel must remain in the new direction for more than 3 completed bars before entry.")
+
+groupRisk = "4. Optional R Target"
 useRTarget = input.bool(false, "Use stop and R target", group=groupRisk,
      tooltip="Off: hold until the opposite kernel color change. On: place a fixed ATR stop and a target at the chosen multiple of that risk. No repeat entry until another color change.")
 atrLength = input.int(14, "ATR Length", minval=1, group=groupRisk)
 stopAtrMultiplier = input.float(1.0, "Stop distance (ATR)", minval=0.1, step=0.1, group=groupRisk)
 rewardMultiple = input.float(2.0, "Profit target (R)", minval=0.25, step=0.25, group=groupRisk)
 
-groupDisplay = "4. Display"
+groupDisplay = "5. Display"
 showTradeStats = input.bool(true, "Show LC-style trade stats", group=groupDisplay)
 showSignals = input.bool(true, "Show entry markers", group=groupDisplay)
 showRiskLevels = input.bool(false, "Show active stop / target", group=groupDisplay)
@@ -61,50 +65,73 @@ plot(yhat1, "Kernel Regression Estimate", color=kernelReady ? (isBullish ? bullC
 inSession = timeframe.isintraday and not na(time(timeframe.period, tradeSession, "America/New_York"))
 sessionClose = time_close(timeframe.period, tradeSession, "America/New_York")
 entryWindow = inSession and not na(sessionClose) and time_close <= sessionClose
-confirmedEntry = barstate.isconfirmed and entryWindow
-
-longSignal = bullishFlip and confirmedEntry
-shortSignal = bearishFlip and confirmedEntry
 
 // 1R is fixed at the signal bar's ATR distance. With process_orders_on_close,
-// the strategy entry fills at that bar's close in the backtest emulator.
+// the strategy entry fills at the confirmation bar's close in the emulator.
 riskDistance = math.max(ta.atr(atrLength) * stopAtrMultiplier, syminfo.mintick)
 var float activeStop = na
 var float activeTarget = na
 var int lastEntryBar = na
 var int earlyColorFlips = 0
+var int pendingDirection = 0
+var int confirmationCount = 0
 
+// Arm only when the color changes within the entry window. Count completed
+// bars in that color, including the flip bar; cancel if color or session ends.
 if barstate.isconfirmed
     if bullishFlip
-        if strategy.position_size < 0 and not na(lastEntryBar) and bar_index - lastEntryBar < 4
+        pendingDirection := entryWindow ? 1 : 0
+        confirmationCount := entryWindow ? 1 : 0
+    else if bearishFlip
+        pendingDirection := entryWindow ? -1 : 0
+        confirmationCount := entryWindow ? 1 : 0
+    else if pendingDirection != 0
+        if not entryWindow or (pendingDirection == 1 and not isBullish) or (pendingDirection == -1 and not isBearish)
+            pendingDirection := 0
+            confirmationCount := 0
+        else
+            confirmationCount += 1
+
+longSignal = barstate.isconfirmed and pendingDirection == 1 and confirmationCount == confirmationBars and not na(riskDistance)
+shortSignal = barstate.isconfirmed and pendingDirection == -1 and confirmationCount == confirmationBars and not na(riskDistance)
+
+if barstate.isconfirmed
+    // A color flip exits the old trade immediately. Only a confirmed new
+    // direction opens a position; with one-bar confirmation, entry reverses.
+    if bullishFlip and strategy.position_size < 0
+        if not na(lastEntryBar) and bar_index - lastEntryBar < 4
             earlyColorFlips += 1
-        if longSignal and not na(riskDistance)
-            strategy.entry("Long", strategy.long, alert_message="ARES KERNEL BUY")
-            activeStop := useRTarget ? close - riskDistance : na
-            activeTarget := useRTarget ? close + riskDistance * rewardMultiple : na
-            lastEntryBar := bar_index
-            if useRTarget
-                strategy.exit("Long R Exit", from_entry="Long", stop=activeStop, limit=activeTarget,
-                     alert_message="ARES KERNEL LONG R EXIT")
-        else if strategy.position_size < 0
+        if not longSignal
             strategy.close("Short", comment="Green kernel", alert_message="ARES KERNEL SHORT COLOR EXIT")
             activeStop := na
             activeTarget := na
-    if bearishFlip
-        if strategy.position_size > 0 and not na(lastEntryBar) and bar_index - lastEntryBar < 4
+    if bearishFlip and strategy.position_size > 0
+        if not na(lastEntryBar) and bar_index - lastEntryBar < 4
             earlyColorFlips += 1
-        if shortSignal and not na(riskDistance)
-            strategy.entry("Short", strategy.short, alert_message="ARES KERNEL SELL")
-            activeStop := useRTarget ? close + riskDistance : na
-            activeTarget := useRTarget ? close - riskDistance * rewardMultiple : na
-            lastEntryBar := bar_index
-            if useRTarget
-                strategy.exit("Short R Exit", from_entry="Short", stop=activeStop, limit=activeTarget,
-                     alert_message="ARES KERNEL SHORT R EXIT")
-        else if strategy.position_size > 0
+        if not shortSignal
             strategy.close("Long", comment="Red kernel", alert_message="ARES KERNEL LONG COLOR EXIT")
             activeStop := na
             activeTarget := na
+
+    if longSignal
+        strategy.entry("Long", strategy.long, alert_message="ARES KERNEL BUY")
+        activeStop := useRTarget ? close - riskDistance : na
+        activeTarget := useRTarget ? close + riskDistance * rewardMultiple : na
+        lastEntryBar := bar_index
+        if useRTarget
+            strategy.exit("Long R Exit", from_entry="Long", stop=activeStop, limit=activeTarget,
+                 alert_message="ARES KERNEL LONG R EXIT")
+    if shortSignal
+        strategy.entry("Short", strategy.short, alert_message="ARES KERNEL SELL")
+        activeStop := useRTarget ? close + riskDistance : na
+        activeTarget := useRTarget ? close - riskDistance * rewardMultiple : na
+        lastEntryBar := bar_index
+        if useRTarget
+            strategy.exit("Short R Exit", from_entry="Short", stop=activeStop, limit=activeTarget,
+                 alert_message="ARES KERNEL SHORT R EXIT")
+    if longSignal or shortSignal
+        pendingDirection := 0
+        confirmationCount := 0
 
 // Keep levels visible only while the trade is open. If a bracket fills, wait
 // for the next genuine color change before taking another trade.
@@ -124,7 +151,7 @@ plotshape(showSignals and shortSignal and not na(riskDistance), title="Kernel sh
 // Same compact position, normal font, neutral borders, and teal/red theme as
 // the LC trade box. Figures here use actual Strategy Tester closed trades.
 if showTradeStats
-    var table statsTable = table.new(position.top_right, columns=2, rows=7,
+    var table statsTable = table.new(position.top_right, columns=2, rows=8,
          frame_color=clearColor, frame_width=1, border_width=1, border_color=clearColor)
     if barstate.islast
         closed = strategy.closedtrades
@@ -148,3 +175,5 @@ if showTradeStats
         table.cell(statsTable, 1, 5, wlRatio, text_halign=text.align_center, bgcolor=clearColor, text_color=neutralColor, text_size=size.normal)
         table.cell(statsTable, 0, 6, "Early Color Flips", text_halign=text.align_center, bgcolor=clearColor, text_color=neutralColor, text_size=size.normal)
         table.cell(statsTable, 1, 6, str.tostring(earlyColorFlips), text_halign=text.align_center, bgcolor=clearColor, text_color=neutralColor, text_size=size.normal)
+        table.cell(statsTable, 0, 7, "Confirm", text_halign=text.align_center, bgcolor=clearColor, text_color=neutralColor, text_size=size.normal)
+        table.cell(statsTable, 1, 7, pendingDirection == 0 ? "—" : (pendingDirection == 1 ? "Bull " : "Bear ") + str.tostring(confirmationCount) + "/" + str.tostring(confirmationBars), text_halign=text.align_center, bgcolor=clearColor, text_color=neutralColor, text_size=size.normal)
