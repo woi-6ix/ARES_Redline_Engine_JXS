@@ -1,204 +1,56 @@
-# ARES Confirmation Engine
+# ARES TradingView Engines
 
 ![Pine Script](https://img.shields.io/badge/Pine%20Script-v6-blue)
 ![Python](https://img.shields.io/badge/Language-Python-blue)
 ![Platform](https://img.shields.io/badge/Platform-TradingView-black)
 ![License](https://img.shields.io/badge/License-MPL--2.0-purple)
-![Engine](https://img.shields.io/badge/Engine-BBSR%20%2B%20Lorentzian-red)
 
-**ARES** is a TradingView confirmation engine built around a simple sequence:
+ARES contains two TradingView setups: the original BBSR/LC confirmation engine and a separate kernel color-change swing strategy. Both use the 09:30–15:00 **America/New_York** entry window, which follows daylight saving time.
 
-**BBSR arrow → LC confirmation bars → slope confirmation → entry flag**
+## Kernel Swing Strategy
 
-The previous red-line-cross requirement has been removed. A BBSR Bull or Bear arrow now starts the setup directly.
+[`ARES_Kernel_Swing_Strategy_JXS.pine`](ARES_Kernel_Swing_Strategy_JXS.pine) trades the rational quadratic kernel line from jdehorty's Lorentzian Classification indicator. The default color changes with the line's slope; enable **Enhance Kernel Smoothing** to use the original Gaussian comparison instead. Lookback, relative weighting, regression level, lag, and source are configurable.
 
-Repository: https://github.com/woi-6ix/ARES_Redline_Engine_JXS
-
-> For research, calibration, and backtesting only.
-
----
-
-## Signal Logic
-
-### Bullish
-
-1. BBSR prints a **Bull** arrow during the active session.
-2. ARES begins counting confirmation bars starting from the **next candle**.
-3. Every confirmation bar must have:
-   - bullish Lorentzian Classification state;
-   - positive ATR-normalized price slope above the configured threshold.
-4. Once the selected number of consecutive bars is reached, ARES prints a **BUY flag**.
-5. The entry alert fires only at this point.
-
-### Bearish
-
-1. BBSR prints a **Bear** arrow during the active session.
-2. Confirmation begins on the next candle.
-3. Every confirmation bar must have:
-   - bearish Lorentzian Classification state;
-   - negative ATR-normalized price slope below the configured threshold.
-4. Once the selected number of consecutive bars is reached, ARES prints a **SELL flag**.
-5. The entry alert fires only after confirmation is complete.
-
-The confirmation count is configurable. The default is **2 bars**, but it can be changed to 1 or any larger value supported by the input.
-
----
-
-## Trading Window
-
-ARES uses:
-
-**09:30–15:00 America/New_York**
-
-BBSR arrows outside the trading window do not arm a setup.
-
-Pending setups are cleared outside the active session. Active trades can optionally receive an exit at 3:00 PM.
-
----
-
-## Lorentzian Confirmation
-
-ARES embeds the Lorentzian Classification feature engine and Approximate Nearest Neighbor logic used by the LC indicator.
-
-Default features:
-
-| Feature | Parameters |
+| Kernel changes | Strategy action |
 | --- | --- |
-| RSI | 14 / 1 |
-| WaveTrend | 10 / 11 |
-| CCI | 20 / 1 |
-| ADX | 20 / 2 |
-| RSI | 9 / 1 |
+| Red to green | Enter long; reverse an open short |
+| Green to red | Enter short; reverse an open long |
+| Change outside 09:30–15:00 | Close an opposite position, but open no new position |
+| Target or stop fills | Stay flat until the next color change |
 
-Optional LC filters include volatility, regime, ADX, EMA, and SMA confirmation.
+Orders are placed on the confirmed signal bar's close. The session limits **new entries**; open trades may continue past 15:00 or overnight until the next color change or an enabled stop/target. For precise session boundaries, use an intraday time based chart such as 1 minute or 5 minutes.
 
-ARES does not enter simply because LC is bullish or bearish. LC must match the original BBSR direction on **each required confirmation candle**.
+**Optional R target:** Disabled by default so trades follow the kernel until its color changes. When enabled, 1R is the ATR reading on the entry bar multiplied by the configurable stop distance (default: 14 period ATR × 1). A fixed stop is placed 1R from entry; the take profit is placed at the selected multiple (default **2R**, adjustable to **3R** or another value). These distances are in the underlying chart's price units, not option premium. A color change can close or reverse a position before either bracket order fills.
 
----
+The compact LC-style trade box uses `size.normal`, the LC teal/red palette, and TradingView's **actual closed strategy trades** for win rate, trades, net P&L, profit factor, and win/loss ratio. “Early Color Flips” counts an opposite color change less than four bars after an open trade's entry.
 
-## Slope Confirmation
+## Confirmation Engine
 
-Price slope is calculated from linear regression and normalized by ATR.
+[`ARES_Redline_Engine_JXS.pine`](ARES_Redline_Engine_JXS.pine) is the indicator; [`ARES_Confirmation_Engine_Strategy_JXS.pine`](ARES_Confirmation_Engine_Strategy_JXS.pine) is its Strategy Tester version. The signal path is:
 
-For a bullish confirmation bar:
+**BBSR arrow → consecutive LC and slope confirmations → BUY/SELL flag**
 
-```text
-Normalized slope >= minimum slope threshold
-```
+The BBSR arrow arms the setup. Starting on the following candle, each required confirmation bar must agree with the LC direction and meet an ATR normalized price slope threshold. The default confirmation count is two bars. The confirmation strategy uses a four bar maximum trade duration by default, with optional LC flip and session exits. Its alerts fire on the confirmed entry, not the initial BBSR arrow.
 
-For a bearish confirmation bar:
+## Use
 
-```text
-Normalized slope <= -minimum slope threshold
-```
+1. Open the desired `.pine` file and paste its entire contents into TradingView's Pine Editor.
+2. Add it to an intraday chart. The strategies report results in **Strategy Tester**.
+3. For the kernel strategy, adjust the kernel inputs to match your LC chart. Switch on **Use stop and R target** if you want a fixed 2R/3R target.
+4. Configure fees, slippage, and position size in TradingView's strategy properties for the instrument you trade.
 
-The default slope threshold is **0.05 ATR**.
-
-If either LC state or slope fails on a candle, the consecutive confirmation count resets while the BBSR setup remains armed until the maximum confirmation window expires.
-
----
-
-## Chart Theme
-
-ARES follows the simplified LC visual language:
-
-- Teal: bullish
-- Red: bearish
-- Gray: neutral
-- Small triangle: original BBSR arrow
-- Flag: confirmed ARES entry
-- X: trade exit
-- Subtle candle tint: a bar that currently passes both LC and slope confirmation
-
-TradingView's standard chart/table typography is used to stay visually consistent with LC.
-
----
-
-## Entries and Exits
-
-The entry flag is the point where the full ARES confirmation sequence has completed.
-
-Exits use a simplified LC-style lifecycle:
-
-- maximum trade-bar duration;
-- optional early exit when LC flips to the opposite state;
-- optional session-end exit.
-
-The default maximum trade duration is **4 bars**, matching the four-bar horizon used by the LC model.
-
----
-
-## Alert
-
-ARES uses a single functional entry alert.
-
-After adding either the indicator or strategy to TradingView:
-
-1. Select **Create Alert**.
-2. Choose **ARES Confirmation Engine v3** or **ARES Confirmation Engine Strategy v3**.
-3. Select **Any alert() function call**.
-4. Use **Once Per Bar Close**.
-
-The alert only fires after the requested confirmation bars have passed both LC and slope checks.
-
-Messages identify either:
-
-- `ARES BUY`
-- `ARES SELL`
-
-Raw BBSR arrows do not trigger the ARES entry alert.
-
----
-
-## LC-Style Trade Stats
-
-The compact stats panel uses the LC backtest helper and displays:
-
-- Win rate
-- Trades
-- Wins / losses
-- Win/loss ratio
-- Early LC flips
-- Current LC state
-- Current confirmation progress
-
-These LC-style statistics are intended for calibration. The separate strategy file also exposes the same confirmed entries and LC-style exits directly to TradingView Strategy Tester.
-
----
-
-## Main Controls
-
-| Group | Controls |
-| --- | --- |
-| BBSR | Bollinger settings, Stochastic RSI settings, extremes |
-| Trading Hours | Session window |
-| Lorentzian Classification | Neighbors, history, prediction threshold |
-| LC Filters | Volatility, regime, ADX, EMA, SMA |
-| LC Feature Engineering | RSI, WT, CCI, ADX parameters |
-| Confirmation Slope | Lookback, minimum normalized slope |
-| ARES Confirmation | Confirmation bars, maximum wait |
-| LC-Style Exits | Maximum bars, LC flip, session exit |
-| LC Trade Stats | Table and worst-case estimate |
-
----
+The kernel strategy imports `jdehorty/KernelFunctions/2`; the confirmation engines import `jdehorty/MLExtensions/2`. TradingView must have access to these published Pine libraries. Backtests depend on chart bars and the broker emulator; they do not model option contract pricing.
 
 ## Files
 
-- `ARES_Redline_Engine_JXS.pine` — TradingView indicator
-- `ARES_Confirmation_Engine_Strategy_JXS.pine` — TradingView strategy / Strategy Tester version
-- `ares_reference.py` — Python research companion
-- `THIRD_PARTY_NOTICES.md` — third-party attribution
-- `LICENSE` — MPL 2.0 license
-
----
+- `ARES_Kernel_Swing_Strategy_JXS.pine` — kernel color-change strategy and LC-style trade box
+- `ARES_Redline_Engine_JXS.pine` — BBSR/LC confirmation indicator
+- `ARES_Confirmation_Engine_Strategy_JXS.pine` — confirmation strategy
+- `ares_reference.py` and `requirements.txt` — Python research companion
+- `THIRD_PARTY_NOTICES.md` and `LICENSE` — attribution and MPL 2.0
 
 ## Author
 
-**JXS**  
-GitHub: [@woi-6ix](https://github.com/woi-6ix)
+**JXS** · GitHub: [@woi-6ix](https://github.com/woi-6ix)
 
-## License and Attribution
-
-Licensed under the **Mozilla Public License 2.0**.
-
-Lorentzian Classification concepts and portions of the ML logic are attributed to **jdehorty**. ARES integration and sequencing changes are identified in the source header.
+Based in part on Lorentzian Classification and kernel regression work by **jdehorty**. See [third-party notices](THIRD_PARTY_NOTICES.md). Licensed under [MPL 2.0](LICENSE).
