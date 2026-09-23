@@ -5,7 +5,20 @@
 ![Platform](https://img.shields.io/badge/Platform-TradingView-black)
 ![License](https://img.shields.io/badge/License-MPL--2.0-purple)
 
-ARES contains two TradingView setups: the original BBSR/LC confirmation engine and a separate kernel color-change swing strategy. Both use the 09:30–15:00 **America/New_York** entry window, which follows daylight saving time.
+ARES contains the original BBSR/LC confirmation engine and two separate strategies: one follows Lorentzian Classification's own trade signals; the other follows kernel color changes. New entries use the 09:30–15:00 **America/New_York** window, which follows daylight saving time.
+
+## LC Trade Strategy
+
+[`ARES_LC_Trade_Strategy_JXS.pine`](ARES_LC_Trade_Strategy_JXS.pine) rebuilds the attached Lorentzian Classification indicator's feature engine, neighbor search, filters, kernel check, and original buy/sell conditions. **With both new filters unchecked, it enters on each LC buy/sell signal within trading hours**, on the signal bar's close. It follows LC's default four-bar exit or its dynamic kernel exit option. Exits may happen after 15:00; this strategy does not automatically flatten at session end.
+
+Two independent switches modify entries:
+
+| Setting | When checked |
+| --- | --- |
+| Require consecutive LC color bars | Wait for the chosen number of consecutive LC prediction bars in the signal direction, counting the LC signal bar as bar 1 (default 4). If color or session breaks, discard the pending entry. |
+| Require price slope in trade direction | Require linear-regression price slope normalized by ATR to meet the minimum threshold on the signal and, when color confirmation is on, each confirmation bar. |
+
+The **Use stop and profit target** switch is off by default. When checked, entry-bar ATR × the selected multiplier defines **1R**. The stop is 1R away and the profit order is placed at the selected multiple (default 2R, adjustable to 3R). LC exit signals can still close the trade earlier. When unchecked, no R stop or target is placed. The LC-style trade box uses actual closed Strategy Tester trades and shows confirmation progress.
 
 ## Kernel Swing Strategy
 
@@ -39,13 +52,14 @@ The BBSR arrow arms the setup. Starting on the following candle, each required c
 
 1. Open the desired `.pine` file and paste its entire contents into TradingView's Pine Editor.
 2. Add it to an intraday chart. The strategies report results in **Strategy Tester**.
-3. For the kernel strategy, adjust the kernel inputs to match your LC chart and set **Consecutive color bars**. Switch on **Use stop and R target** if you want a fixed 2R/3R target.
+3. For LC trade signals, use the new LC Trade Strategy and leave its optional confirmation, slope, and R switches off to start with the original LC behavior. For the earlier kernel-only approach, use Kernel Swing Strategy.
 4. Configure fees, slippage, and position size in TradingView's strategy properties for the instrument you trade.
 
-The kernel strategy imports `jdehorty/KernelFunctions/2`; the confirmation engines import `jdehorty/MLExtensions/2`. TradingView must have access to these published Pine libraries. Backtests depend on chart bars and the broker emulator; they do not model option contract pricing.
+The LC trade strategy imports `jdehorty/MLExtensions/2` and `jdehorty/KernelFunctions/2`; the other engines use the relevant published libraries. TradingView must have access to them. Backtests depend on chart bars and the broker emulator; they do not model option contract pricing. The optional R distances use the chart's underlying price.
 
 ## Files
 
+- `ARES_LC_Trade_Strategy_JXS.pine` — LC signal strategy with optional color, slope, and R settings
 - `ARES_Kernel_Swing_Strategy_JXS.pine` — kernel color-change strategy and LC-style trade box
 - `ARES_Redline_Engine_JXS.pine` — BBSR/LC confirmation indicator
 - `ARES_Confirmation_Engine_Strategy_JXS.pine` — confirmation strategy
