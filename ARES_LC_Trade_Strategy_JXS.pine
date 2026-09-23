@@ -1,0 +1,350 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// Lorentzian Classification feature engine, neighbor search, signal rules,
+// kernel filter, and LC exit conditions adapted from © jdehorty.
+// Session, optional confirmation, slope, R orders, and strategy integration: JXS.
+//@version=6
+strategy("ARES LC Trade Strategy [JXS]", shorttitle="ARES LC Strategy", overlay=true,
+     precision=4, pyramiding=0, initial_capital=10000,
+     default_qty_type=strategy.percent_of_equity, default_qty_value=100,
+     commission_type=strategy.commission.percent, commission_value=0,
+     process_orders_on_close=true, calc_on_every_tick=false)
+
+import jdehorty/MLExtensions/2 as ml
+import jdehorty/KernelFunctions/2 as kernels
+
+type FeatureSeries
+    float f1
+    float f2
+    float f3
+    float f4
+    float f5
+
+type FeatureArrays
+    array<float> f1
+    array<float> f2
+    array<float> f3
+    array<float> f4
+    array<float> f5
+
+feature_value(string feature, int a, int b) =>
+    switch feature
+        "RSI" => ml.n_rsi(close, a, b)
+        "WT"  => ml.n_wt(hlc3, a, b)
+        "CCI" => ml.n_cci(close, a, b)
+        "ADX" => ml.n_adx(high, low, close, a)
+
+lor_distance(int i, int count, FeatureSeries fs, FeatureArrays fa) =>
+    switch count
+        5 => math.log(1 + math.abs(fs.f1 - array.get(fa.f1, i))) +
+             math.log(1 + math.abs(fs.f2 - array.get(fa.f2, i))) +
+             math.log(1 + math.abs(fs.f3 - array.get(fa.f3, i))) +
+             math.log(1 + math.abs(fs.f4 - array.get(fa.f4, i))) +
+             math.log(1 + math.abs(fs.f5 - array.get(fa.f5, i)))
+        4 => math.log(1 + math.abs(fs.f1 - array.get(fa.f1, i))) +
+             math.log(1 + math.abs(fs.f2 - array.get(fa.f2, i))) +
+             math.log(1 + math.abs(fs.f3 - array.get(fa.f3, i))) +
+             math.log(1 + math.abs(fs.f4 - array.get(fa.f4, i)))
+        3 => math.log(1 + math.abs(fs.f1 - array.get(fa.f1, i))) +
+             math.log(1 + math.abs(fs.f2 - array.get(fa.f2, i))) +
+             math.log(1 + math.abs(fs.f3 - array.get(fa.f3, i)))
+        2 => math.log(1 + math.abs(fs.f1 - array.get(fa.f1, i))) +
+             math.log(1 + math.abs(fs.f2 - array.get(fa.f2, i)))
+
+groupLC = "1. LC Model"
+source = input.source(close, "Source", group=groupLC)
+neighborsCount = input.int(8, "Neighbors Count", minval=1, maxval=100, group=groupLC)
+maxBarsBack = input.int(2000, "Max Bars Back", minval=100, group=groupLC)
+featureCount = input.int(5, "Feature Count", minval=2, maxval=5, group=groupLC)
+includeFullHistory = input.bool(false, "Include Full History", group=groupLC)
+useDynamicExits = input.bool(false, "Use LC Dynamic Exits", group=groupLC,
+     tooltip="LC's dynamic kernel exits apply when EMA and SMA filters and kernel smoothing are disabled. Otherwise LC's four-bar exits apply.")
+
+groupFeatures = "2. LC Feature Engineering"
+f1Name = input.string("RSI", "Feature 1", options=["RSI", "WT", "CCI", "ADX"], group=groupFeatures, inline="f1")
+f1A = input.int(14, "A", minval=1, group=groupFeatures, inline="f1")
+f1B = input.int(1, "B", minval=1, group=groupFeatures, inline="f1")
+f2Name = input.string("WT", "Feature 2", options=["RSI", "WT", "CCI", "ADX"], group=groupFeatures, inline="f2")
+f2A = input.int(10, "A", minval=1, group=groupFeatures, inline="f2")
+f2B = input.int(11, "B", minval=1, group=groupFeatures, inline="f2")
+f3Name = input.string("CCI", "Feature 3", options=["RSI", "WT", "CCI", "ADX"], group=groupFeatures, inline="f3")
+f3A = input.int(20, "A", minval=1, group=groupFeatures, inline="f3")
+f3B = input.int(1, "B", minval=1, group=groupFeatures, inline="f3")
+f4Name = input.string("ADX", "Feature 4", options=["RSI", "WT", "CCI", "ADX"], group=groupFeatures, inline="f4")
+f4A = input.int(20, "A", minval=1, group=groupFeatures, inline="f4")
+f4B = input.int(2, "B", minval=1, group=groupFeatures, inline="f4")
+f5Name = input.string("RSI", "Feature 5", options=["RSI", "WT", "CCI", "ADX"], group=groupFeatures, inline="f5")
+f5A = input.int(9, "A", minval=1, group=groupFeatures, inline="f5")
+f5B = input.int(1, "B", minval=1, group=groupFeatures, inline="f5")
+
+groupFilters = "3. Original LC Filters"
+useVolatilityFilter = input.bool(true, "Volatility Filter", group=groupFilters)
+useRegimeFilter = input.bool(true, "Regime Filter", group=groupFilters, inline="regime")
+regimeThreshold = input.float(-0.1, "Threshold", minval=-10, maxval=10, step=0.1, group=groupFilters, inline="regime")
+useAdxFilter = input.bool(false, "ADX Filter", group=groupFilters, inline="adx")
+adxThreshold = input.int(20, "Threshold", minval=0, maxval=100, group=groupFilters, inline="adx")
+useEmaFilter = input.bool(false, "EMA Filter", group=groupFilters, inline="ema")
+emaPeriod = input.int(200, "Period", minval=1, group=groupFilters, inline="ema")
+useSmaFilter = input.bool(false, "SMA Filter", group=groupFilters, inline="sma")
+smaPeriod = input.int(200, "Period", minval=1, group=groupFilters, inline="sma")
+
+groupKernel = "4. LC Kernel Filter"
+useKernelFilter = input.bool(true, "Trade with Kernel", group=groupKernel)
+showKernel = input.bool(true, "Show Kernel Line", group=groupKernel)
+useKernelSmoothing = input.bool(false, "Enhance Kernel Smoothing", group=groupKernel)
+h = input.int(8, "Lookback Window", minval=3, group=groupKernel)
+r = input.float(8.0, "Relative Weighting", minval=0.25, step=0.25, group=groupKernel)
+x = input.int(25, "Regression Level", minval=2, group=groupKernel)
+lag = input.int(2, "Lag", minval=1, maxval=2, group=groupKernel)
+
+groupSession = "5. Trading Hours"
+tradeSession = input.session("0930-1500:23456", "New entries (New York)", group=groupSession)
+
+groupConfirm = "6. Optional LC Bar Color Confirmation"
+useColorConfirmation = input.bool(false, "Require consecutive LC color bars", group=groupConfirm,
+     tooltip="When enabled, count consecutive LC prediction bars in the signal's direction, including its signal bar. Off enters on the LC signal itself.")
+confirmationBars = input.int(4, "Consecutive bars", minval=1, group=groupConfirm)
+
+groupSlope = "7. Optional Slope Filter"
+useSlopeFilter = input.bool(false, "Require price slope in trade direction", group=groupSlope)
+slopeLength = input.int(10, "Linear regression length", minval=2, group=groupSlope)
+minSlopeAtr = input.float(0.05, "Minimum slope / ATR", minval=0, step=0.01, group=groupSlope)
+
+groupRisk = "8. Optional R Target"
+useRTarget = input.bool(false, "Use stop and profit target", group=groupRisk,
+     tooltip="Off follows LC's original exit conditions. On adds a fixed ATR stop and a target at the chosen R multiple; LC exits can still close earlier.")
+atrLength = input.int(14, "ATR Length", minval=1, group=groupRisk)
+stopAtrMultiplier = input.float(1.0, "1R stop distance (ATR)", minval=0.1, step=0.1, group=groupRisk)
+rewardMultiple = input.float(2.0, "Take profit (R)", minval=0.25, step=0.25, group=groupRisk)
+
+groupVisual = "9. Display"
+showLCBars = input.bool(true, "Show LC bar colors", group=groupVisual)
+showRawSignals = input.bool(false, "Show original LC signal markers", group=groupVisual)
+showStats = input.bool(true, "Show LC-style trade stats", group=groupVisual)
+showRiskLevels = input.bool(false, "Show active R stop and target", group=groupVisual)
+bullColor = #009988
+bearColor = #CC3311
+clearColor = color.new(color.black, 100)
+
+FeatureSeries fs = FeatureSeries.new(
+     feature_value(f1Name, f1A, f1B), feature_value(f2Name, f2A, f2B),
+     feature_value(f3Name, f3A, f3B), feature_value(f4Name, f4A, f4B),
+     feature_value(f5Name, f5A, f5B))
+var array<float> f1Array = array.new_float()
+var array<float> f2Array = array.new_float()
+var array<float> f3Array = array.new_float()
+var array<float> f4Array = array.new_float()
+var array<float> f5Array = array.new_float()
+array.push(f1Array, fs.f1)
+array.push(f2Array, fs.f2)
+array.push(f3Array, fs.f3)
+array.push(f4Array, fs.f4)
+array.push(f5Array, fs.f5)
+FeatureArrays fa = FeatureArrays.new(f1Array, f2Array, f3Array, f4Array, f5Array)
+
+// This four-bar training label and the approximate neighbor search match LC.
+int trainingLabel = source[4] < source ? -1 : source[4] > source ? 1 : 0
+var array<int> trainingLabels = array.new_int()
+var array<int> predictions = array.new_int()
+var array<float> distances = array.new_float()
+var float prediction = 0.0
+var int signal = 0
+array.push(trainingLabels, trainingLabel)
+
+int maxBarsBackIndex = last_bar_index >= maxBarsBack ? last_bar_index - maxBarsBack : 0
+int sizeLoop = math.min(maxBarsBack - 1, array.size(trainingLabels) - 1)
+int startIndex = includeFullHistory ? 0 : maxBarsBackIndex
+float lastDistance = -1.0
+// Preserve the attached LC indicator's index range and iteration direction.
+if bar_index >= maxBarsBackIndex
+    for i = startIndex to sizeLoop
+        float distance = lor_distance(i, featureCount, fs, fa)
+        if distance >= lastDistance and i % 4 != 0
+            lastDistance := distance
+            array.push(distances, distance)
+            array.push(predictions, array.get(trainingLabels, i))
+            if array.size(predictions) > neighborsCount
+                lastDistance := array.get(distances, math.round(neighborsCount * 3 / 4))
+                array.shift(distances)
+                array.shift(predictions)
+    prediction := array.sum(predictions)
+
+bool filterAll = ml.filter_volatility(1, 10, useVolatilityFilter) and
+     ml.regime_filter(ohlc4, regimeThreshold, useRegimeFilter) and
+     ml.filter_adx(source, 14, adxThreshold, useAdxFilter)
+signal := prediction > 0 and filterAll ? 1 : prediction < 0 and filterAll ? -1 : nz(signal[1], 0)
+var int barsHeld = 0
+barsHeld := bool(ta.change(signal)) ? 0 : barsHeld + 1
+bool isHeldFourBars = barsHeld == 4
+bool isHeldLessThanFourBars = barsHeld > 0 and barsHeld < 4
+bool isEarlySignalFlip = bool(ta.change(signal)) and
+     (bool(ta.change(signal[1])) or bool(ta.change(signal[2])) or bool(ta.change(signal[3])))
+bool emaUp = not useEmaFilter or close > ta.ema(close, emaPeriod)
+bool emaDown = not useEmaFilter or close < ta.ema(close, emaPeriod)
+bool smaUp = not useSmaFilter or close > ta.sma(close, smaPeriod)
+bool smaDown = not useSmaFilter or close < ta.sma(close, smaPeriod)
+bool newBuySignal = signal == 1 and emaUp and smaUp and bool(ta.change(signal))
+bool newSellSignal = signal == -1 and emaDown and smaDown and bool(ta.change(signal))
+bool lastSignalBuy = signal[4] == 1 and emaUp[4] and smaUp[4]
+bool lastSignalSell = signal[4] == -1 and emaDown[4] and smaDown[4]
+
+float yhat1 = kernels.rationalQuadratic(source, h, r, x)
+float yhat2 = kernels.gaussian(source, h - lag, x)
+bool bullishRate = yhat1 > yhat1[1]
+bool bearishRate = yhat1 < yhat1[1]
+bool bullishChange = bullishRate and yhat1[2] > yhat1[1]
+bool bearishChange = bearishRate and yhat1[2] < yhat1[1]
+bool bullishSmooth = yhat2 >= yhat1
+bool bearishSmooth = yhat2 <= yhat1
+bool kernelBull = not useKernelFilter or (useKernelSmoothing ? bullishSmooth : bullishRate)
+bool kernelBear = not useKernelFilter or (useKernelSmoothing ? bearishSmooth : bearishRate)
+plot(showKernel ? yhat1 : na, "LC Kernel Regression Estimate",
+     color=useKernelSmoothing ? (bullishSmooth ? bullColor : bearColor) : (bullishRate ? bullColor : bearColor), linewidth=2)
+
+// Exact LC entry conditions from the attached indicator.
+bool lcLong = newBuySignal and kernelBull and emaUp and smaUp
+bool lcShort = newSellSignal and kernelBear and emaDown and smaDown
+
+// LC's standard four-bar and optional dynamic exit conditions.
+int barsSinceShort = ta.barssince(lcShort)
+int barsSinceBullish = ta.barssince(useKernelSmoothing ? ta.crossover(yhat2, yhat1) : bullishChange)
+int barsSinceLong = ta.barssince(lcLong)
+int barsSinceBearish = ta.barssince(useKernelSmoothing ? ta.crossunder(yhat2, yhat1) : bearishChange)
+bool validLongExit = barsSinceBearish > barsSinceLong
+bool validShortExit = barsSinceBullish > barsSinceShort
+bool dynamicLongExit = bearishChange and validLongExit[1]
+bool dynamicShortExit = bullishChange and validShortExit[1]
+bool strictLongExit = ((isHeldFourBars and lastSignalBuy) or
+     (isHeldLessThanFourBars and newSellSignal and lastSignalBuy)) and lcLong[4]
+bool strictShortExit = ((isHeldFourBars and lastSignalSell) or
+     (isHeldLessThanFourBars and newBuySignal and lastSignalSell)) and lcShort[4]
+bool dynamicAllowed = useDynamicExits and not useEmaFilter and not useSmaFilter and not useKernelSmoothing
+
+// Only entries are limited to this session; LC exits may occur afterwards.
+bool inSession = timeframe.isintraday and not na(time(timeframe.period, tradeSession, "America/New_York"))
+int sessionClose = time_close(timeframe.period, tradeSession, "America/New_York")
+bool entryWindow = inSession and not na(sessionClose) and time_close <= sessionClose
+float atr = ta.atr(atrLength)
+float riskDistance = math.max(atr * stopAtrMultiplier, syminfo.mintick)
+float priceSlope = ta.linreg(close, slopeLength, 0) - ta.linreg(close, slopeLength, 1)
+float normalizedSlope = atr > 0 ? priceSlope / atr : na
+bool slopeLong = not useSlopeFilter or normalizedSlope >= minSlopeAtr
+bool slopeShort = not useSlopeFilter or normalizedSlope <= -minSlopeAtr
+
+var int pendingDirection = 0
+var int confirmedBars = 0
+var int lastEntryBar = na
+var int earlyFlips = 0
+var float activeStop = na
+var float activeTarget = na
+if barstate.isconfirmed
+    if isEarlySignalFlip
+        earlyFlips += 1
+    if useColorConfirmation
+        if lcLong or lcShort
+            int direction = lcLong ? 1 : -1
+            bool colorOK = direction == 1 ? prediction > 0 : prediction < 0
+            bool slopeOK = direction == 1 ? slopeLong : slopeShort
+            pendingDirection := entryWindow and colorOK and slopeOK ? direction : 0
+            confirmedBars := pendingDirection == 0 ? 0 : 1
+        else if pendingDirection != 0
+            bool colorOK = pendingDirection == 1 ? prediction > 0 : prediction < 0
+            bool slopeOK = pendingDirection == 1 ? slopeLong : slopeShort
+            if not entryWindow or not colorOK or not slopeOK
+                pendingDirection := 0
+                confirmedBars := 0
+            else
+                confirmedBars += 1
+
+bool enterLong = barstate.isconfirmed and entryWindow and not na(riskDistance) and
+     (useColorConfirmation ? pendingDirection == 1 and confirmedBars == confirmationBars : lcLong and slopeLong)
+bool enterShort = barstate.isconfirmed and entryWindow and not na(riskDistance) and
+     (useColorConfirmation ? pendingDirection == -1 and confirmedBars == confirmationBars : lcShort and slopeShort)
+
+// With confirmation, count the standard four-bar exit from the actual fill.
+// With both optional filters off, LC's own entry and exit signals are used.
+bool longLCExit = dynamicAllowed ? dynamicLongExit :
+     (useColorConfirmation ? not na(lastEntryBar) and
+     (bar_index - lastEntryBar >= 4 or lcShort) : strictLongExit)
+bool shortLCExit = dynamicAllowed ? dynamicShortExit :
+     (useColorConfirmation ? not na(lastEntryBar) and
+     (bar_index - lastEntryBar >= 4 or lcLong) : strictShortExit)
+
+if barstate.isconfirmed
+    if strategy.position_size > 0 and not enterShort and
+         (longLCExit or (useColorConfirmation and lcShort))
+        strategy.close("LC Long", comment="LC exit", alert_message="ARES LC LONG EXIT")
+        activeStop := na
+        activeTarget := na
+    if strategy.position_size < 0 and not enterLong and
+         (shortLCExit or (useColorConfirmation and lcLong))
+        strategy.close("LC Short", comment="LC exit", alert_message="ARES LC SHORT EXIT")
+        activeStop := na
+        activeTarget := na
+    if enterLong
+        strategy.entry("LC Long", strategy.long, alert_message="ARES LC BUY")
+        activeStop := useRTarget ? close - riskDistance : na
+        activeTarget := useRTarget ? close + riskDistance * rewardMultiple : na
+        lastEntryBar := bar_index
+        if useRTarget
+            strategy.exit("LC Long R", from_entry="LC Long", stop=activeStop, limit=activeTarget,
+                 alert_message="ARES LC LONG R EXIT")
+    if enterShort
+        strategy.entry("LC Short", strategy.short, alert_message="ARES LC SELL")
+        activeStop := useRTarget ? close + riskDistance : na
+        activeTarget := useRTarget ? close - riskDistance * rewardMultiple : na
+        lastEntryBar := bar_index
+        if useRTarget
+            strategy.exit("LC Short R", from_entry="LC Short", stop=activeStop, limit=activeTarget,
+                 alert_message="ARES LC SHORT R EXIT")
+    if enterLong or enterShort
+        pendingDirection := 0
+        confirmedBars := 0
+
+if strategy.position_size == 0 and strategy.position_size[1] != 0 and not enterLong and not enterShort
+    activeStop := na
+    activeTarget := na
+
+barcolor(showLCBars ? color.new(prediction > 0 ? bullColor : prediction < 0 ? bearColor : color.gray, 50) : na)
+plotshape(showRawSignals and lcLong, "Original LC buy", shape.circle,
+     location.belowbar, color=color.new(bullColor, 40), size=size.tiny)
+plotshape(showRawSignals and lcShort, "Original LC sell", shape.circle,
+     location.abovebar, color=color.new(bearColor, 40), size=size.tiny)
+plotshape(enterLong, "Strategy buy", shape.labelup, location.belowbar, color=bullColor,
+     text="BUY", textcolor=color.white, size=size.tiny)
+plotshape(enterShort, "Strategy sell", shape.labeldown, location.abovebar, color=bearColor,
+     text="SELL", textcolor=color.white, size=size.tiny)
+plot(showRiskLevels and useRTarget and strategy.position_size != 0 ? activeStop : na,
+     "1R stop", color=bearColor, style=plot.style_linebr)
+plot(showRiskLevels and useRTarget and strategy.position_size != 0 ? activeTarget : na,
+     "R target", color=bullColor, style=plot.style_linebr)
+
+if showStats
+    var table statsTable = table.new(position.top_right, 2, 8, frame_color=clearColor,
+         frame_width=1, border_width=1, border_color=clearColor)
+    if barstate.islast
+        int trades = strategy.closedtrades
+        int wins = strategy.wintrades
+        int losses = strategy.losstrades
+        string winRate = trades > 0 ? str.tostring(float(wins) / trades, "#.#%") : "—"
+        string wlRatio = losses > 0 ? str.tostring(float(wins) / losses, "0.00") : "—"
+        string profitFactor = strategy.grossloss < 0 ? str.tostring(strategy.grossprofit / math.abs(strategy.grossloss), "0.00") : "—"
+        string confirmText = not useColorConfirmation ? "Off" : pendingDirection == 0 ? "—" :
+             (pendingDirection == 1 ? "Bull " : "Bear ") + str.tostring(confirmedBars) + "/" + str.tostring(confirmationBars)
+        table.cell(statsTable, 0, 0, "ARES LC", text_color=color.gray, text_size=size.normal, text_halign=text.align_center)
+        table.cell(statsTable, 1, 0, useRTarget ? str.tostring(rewardMultiple, "0.##") + "R" : "LC exits", text_color=bullColor, text_size=size.normal, text_halign=text.align_center)
+        table.cell(statsTable, 0, 1, "Winrate", text_color=color.gray, text_size=size.normal, text_halign=text.align_center)
+        table.cell(statsTable, 1, 1, winRate, text_color=color.gray, text_size=size.normal, text_halign=text.align_center)
+        table.cell(statsTable, 0, 2, "Trades", text_color=color.gray, text_size=size.normal, text_halign=text.align_center)
+        table.cell(statsTable, 1, 2, str.tostring(trades) + " (" + str.tostring(wins) + "|" + str.tostring(losses) + ")", text_color=color.gray, text_size=size.normal, text_halign=text.align_center)
+        table.cell(statsTable, 0, 3, "Net P&L", text_color=color.gray, text_size=size.normal, text_halign=text.align_center)
+        table.cell(statsTable, 1, 3, str.tostring(strategy.netprofit, "#.##"), text_color=color.gray, text_size=size.normal, text_halign=text.align_center)
+        table.cell(statsTable, 0, 4, "Profit Factor", text_color=color.gray, text_size=size.normal, text_halign=text.align_center)
+        table.cell(statsTable, 1, 4, profitFactor, text_color=color.gray, text_size=size.normal, text_halign=text.align_center)
+        table.cell(statsTable, 0, 5, "WL Ratio", text_color=color.gray, text_size=size.normal, text_halign=text.align_center)
+        table.cell(statsTable, 1, 5, wlRatio, text_color=color.gray, text_size=size.normal, text_halign=text.align_center)
+        table.cell(statsTable, 0, 6, "Early LC Flips", text_color=color.gray, text_size=size.normal, text_halign=text.align_center)
+        table.cell(statsTable, 1, 6, str.tostring(earlyFlips), text_color=color.gray, text_size=size.normal, text_halign=text.align_center)
+        table.cell(statsTable, 0, 7, "Confirm", text_color=color.gray, text_size=size.normal, text_halign=text.align_center)
+        table.cell(statsTable, 1, 7, confirmText, text_color=color.gray, text_size=size.normal, text_halign=text.align_center)
