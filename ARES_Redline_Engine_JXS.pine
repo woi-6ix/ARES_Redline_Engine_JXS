@@ -390,6 +390,11 @@ aresSell =
      confirmationCount >= confirmationBarsRequired and
      bearConfirmationBar
 
+// Entry timing is tied directly to the completed ARES signal.
+// There is NO additional line-cross requirement after confirmation.
+aresLongSignal = aresBuy
+aresShortSignal = aresSell
+
 // ============================================================================
 // 9. LC-STYLE TRADE LIFECYCLE + X EXITS
 // ============================================================================
@@ -481,7 +486,7 @@ plotshape(
      textcolor=color.white)
 
 plotshape(
-     aresBuy,
+     aresLongSignal,
      title="ARES Buy Flag",
      style=shape.flag,
      location=location.belowbar,
@@ -491,7 +496,7 @@ plotshape(
      textcolor=color.black)
 
 plotshape(
-     aresSell,
+     aresShortSignal,
      title="ARES Sell Flag",
      style=shape.flag,
      location=location.abovebar,
@@ -537,7 +542,7 @@ plot(useSMAFilter ? sma : na, title="LC SMA", color=color.new(neutralColor, 55))
 // the LC-state filter and slope filter.
 //
 
-if aresBuy
+if aresLongSignal
     alert(
          "ARES BUY | " +
          syminfo.ticker +
@@ -549,7 +554,7 @@ if aresBuy
          str.tostring(close, format.mintick),
          alert.freq_once_per_bar_close)
 
-else if aresSell
+else if aresShortSignal
     alert(
          "ARES SELL | " +
          syminfo.ticker +
@@ -580,7 +585,7 @@ useWorstCase = input.bool(
 
 maxBarsBackIndex = last_bar_index >= maxBarsBack ? last_bar_index - maxBarsBack : 0
 
-[totalWins, totalLosses, totalEarlySignalFlips, totalTrades, tradeStatsHeader, winLossRatio, winRate] = ml.backtest(high, low, open, aresBuy, endLongTrade, aresSell, endShortTrade, isEarlySignalFlip, maxBarsBackIndex, bar_index, lcSource, useWorstCase)
+[totalWins, totalLosses, totalEarlySignalFlips, totalTrades, tradeStatsHeader, winLossRatio, winRate] = ml.backtest(high, low, open, aresLongSignal, endLongTrade, aresShortSignal, endShortTrade, isEarlySignalFlip, maxBarsBackIndex, bar_index, lcSource, useWorstCase)
 
 var table statsTable = table.new(
      position.top_right,
