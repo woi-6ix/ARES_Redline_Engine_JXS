@@ -13,16 +13,19 @@ ARES contains two TradingView setups: the original BBSR/LC confirmation engine a
 
 | Kernel changes | Strategy action |
 | --- | --- |
-| Red to green | Enter long; reverse an open short |
-| Green to red | Enter short; reverse an open long |
-| Change outside 09:30–15:00 | Close an opposite position, but open no new position |
+| Red to green | Close an open short; start bullish entry confirmation |
+| Green to red | Close an open long; start bearish entry confirmation |
+| New color persists for the selected bar count | Enter in that direction if the confirmation bar closes within 09:30–15:00 |
+| Change outside 09:30–15:00 | Close an opposite position, but start no new setup |
 | Target or stop fills | Stay flat until the next color change |
 
-Orders are placed on the confirmed signal bar's close. The session limits **new entries**; open trades may continue past 15:00 or overnight until the next color change or an enabled stop/target. For precise session boundaries, use an intraday time based chart such as 1 minute or 5 minutes.
+**Bar confirmation:** The default is **4 consecutive completed bars** in the new kernel color (more than 3). The color-change bar counts as bar 1. Change **Consecutive color bars** to require a different number. A return to the opposite color or the end of the entry window cancels the pending setup. An existing trade still exits as soon as the color changes; it does not wait for the next entry to confirm.
+
+Orders are placed on the final confirmation bar's close. The session limits **new entries**; open trades may continue past 15:00 or overnight until the next color change or an enabled stop/target. For precise session boundaries, use an intraday time based chart such as 1 minute or 5 minutes.
 
 **Optional R target:** Disabled by default so trades follow the kernel until its color changes. When enabled, 1R is the ATR reading on the entry bar multiplied by the configurable stop distance (default: 14 period ATR × 1). A fixed stop is placed 1R from entry; the take profit is placed at the selected multiple (default **2R**, adjustable to **3R** or another value). These distances are in the underlying chart's price units, not option premium. A color change can close or reverse a position before either bracket order fills.
 
-The compact LC-style trade box uses `size.normal`, the LC teal/red palette, and TradingView's **actual closed strategy trades** for win rate, trades, net P&L, profit factor, and win/loss ratio. “Early Color Flips” counts an opposite color change less than four bars after an open trade's entry.
+The compact LC-style trade box uses `size.normal`, the LC teal/red palette, and TradingView's **actual closed strategy trades** for win rate, trades, net P&L, profit factor, and win/loss ratio. “Early Color Flips” counts an opposite color change less than four bars after an open trade's entry. “Confirm” shows progress toward the next entry.
 
 ## Confirmation Engine
 
@@ -36,7 +39,7 @@ The BBSR arrow arms the setup. Starting on the following candle, each required c
 
 1. Open the desired `.pine` file and paste its entire contents into TradingView's Pine Editor.
 2. Add it to an intraday chart. The strategies report results in **Strategy Tester**.
-3. For the kernel strategy, adjust the kernel inputs to match your LC chart. Switch on **Use stop and R target** if you want a fixed 2R/3R target.
+3. For the kernel strategy, adjust the kernel inputs to match your LC chart and set **Consecutive color bars**. Switch on **Use stop and R target** if you want a fixed 2R/3R target.
 4. Configure fees, slippage, and position size in TradingView's strategy properties for the instrument you trade.
 
 The kernel strategy imports `jdehorty/KernelFunctions/2`; the confirmation engines import `jdehorty/MLExtensions/2`. TradingView must have access to these published Pine libraries. Backtests depend on chart bars and the broker emulator; they do not model option contract pricing.
