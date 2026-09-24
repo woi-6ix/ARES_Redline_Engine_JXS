@@ -170,22 +170,27 @@ if bar_index >= maxBarsBackIndex
                 array.shift(predictions)
     prediction := array.sum(predictions)
 
-bool filterAll = ml.filter_volatility(1, 10, useVolatilityFilter) and
-     ml.regime_filter(ohlc4, regimeThreshold, useRegimeFilter) and
-     ml.filter_adx(source, 14, adxThreshold, useAdxFilter)
+bool volatilityOK = ml.filter_volatility(1, 10, useVolatilityFilter)
+bool regimeOK = ml.regime_filter(ohlc4, regimeThreshold, useRegimeFilter)
+bool adxOK = ml.filter_adx(source, 14, adxThreshold, useAdxFilter)
+bool filterAll = volatilityOK and regimeOK and adxOK
 signal := prediction > 0 and filterAll ? 1 : prediction < 0 and filterAll ? -1 : nz(signal[1], 0)
+int signalDelta = ta.change(signal)
+bool signalChanged = bool(signalDelta)
 var int barsHeld = 0
-barsHeld := bool(ta.change(signal)) ? 0 : barsHeld + 1
+barsHeld := signalChanged ? 0 : barsHeld + 1
 bool isHeldFourBars = barsHeld == 4
 bool isHeldLessThanFourBars = barsHeld > 0 and barsHeld < 4
-bool isEarlySignalFlip = bool(ta.change(signal)) and
-     (bool(ta.change(signal[1])) or bool(ta.change(signal[2])) or bool(ta.change(signal[3])))
-bool emaUp = not useEmaFilter or close > ta.ema(close, emaPeriod)
-bool emaDown = not useEmaFilter or close < ta.ema(close, emaPeriod)
-bool smaUp = not useSmaFilter or close > ta.sma(close, smaPeriod)
-bool smaDown = not useSmaFilter or close < ta.sma(close, smaPeriod)
-bool newBuySignal = signal == 1 and emaUp and smaUp and bool(ta.change(signal))
-bool newSellSignal = signal == -1 and emaDown and smaDown and bool(ta.change(signal))
+bool isEarlySignalFlip = signalChanged and
+     (bool(signalDelta[1]) or bool(signalDelta[2]) or bool(signalDelta[3]))
+float emaValue = ta.ema(close, emaPeriod)
+float smaValue = ta.sma(close, smaPeriod)
+bool emaUp = not useEmaFilter or close > emaValue
+bool emaDown = not useEmaFilter or close < emaValue
+bool smaUp = not useSmaFilter or close > smaValue
+bool smaDown = not useSmaFilter or close < smaValue
+bool newBuySignal = signal == 1 and emaUp and smaUp and signalChanged
+bool newSellSignal = signal == -1 and emaDown and smaDown and signalChanged
 bool lastSignalBuy = signal[4] == 1 and emaUp[4] and smaUp[4]
 bool lastSignalSell = signal[4] == -1 and emaDown[4] and smaDown[4]
 
@@ -207,10 +212,12 @@ bool lcLong = newBuySignal and kernelBull and emaUp and smaUp
 bool lcShort = newSellSignal and kernelBear and emaDown and smaDown
 
 // LC's standard four-bar and optional dynamic exit conditions.
+bool bullishCross = ta.crossover(yhat2, yhat1)
+bool bearishCross = ta.crossunder(yhat2, yhat1)
 int barsSinceShort = ta.barssince(lcShort)
-int barsSinceBullish = ta.barssince(useKernelSmoothing ? ta.crossover(yhat2, yhat1) : bullishChange)
+int barsSinceBullish = ta.barssince(useKernelSmoothing ? bullishCross : bullishChange)
 int barsSinceLong = ta.barssince(lcLong)
-int barsSinceBearish = ta.barssince(useKernelSmoothing ? ta.crossunder(yhat2, yhat1) : bearishChange)
+int barsSinceBearish = ta.barssince(useKernelSmoothing ? bearishCross : bearishChange)
 bool validLongExit = barsSinceBearish > barsSinceLong
 bool validShortExit = barsSinceBullish > barsSinceShort
 bool dynamicLongExit = bearishChange and validLongExit[1]
