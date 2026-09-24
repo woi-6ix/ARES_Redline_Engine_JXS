@@ -350,7 +350,8 @@ plot(showRiskLevels and useRTarget and strategy.position_size != 0 ? activeTarge
 if showStats
     var table statsTable = table.new(position.top_right, 2, 9, frame_color=clearColor,
          frame_width=1, border_width=1, border_color=clearColor)
-    if barstate.islast
+    // Initialize on the last historical bar; refresh on confirmed realtime closes.
+    if barstate.islastconfirmedhistory or (barstate.isrealtime and barstate.isconfirmed)
         int trades = strategy.closedtrades
         int wins = strategy.wintrades
         int losses = strategy.losstrades
