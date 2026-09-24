@@ -118,7 +118,12 @@ atrLength = input.int(14, "ATR Length", minval=1, group=groupRisk)
 stopAtrMultiplier = input.float(1.0, "1R stop distance (ATR)", minval=0.1, step=0.1, group=groupRisk)
 rewardMultiple = input.float(2.0, "Take profit (R)", minval=0.25, step=0.25, group=groupRisk)
 
-groupVisual = "9. Display"
+groupCandleExit = "9. Optional Regular Candle Color Exit"
+useCandleColorExit = input.bool(false, "Exit after consecutive opposing candles", group=groupCandleExit,
+     tooltip="Uses regular price candles: red against longs and green against shorts. The count starts at 0 on entry; a matching candle or doji resets it. LC and R exits can still happen first.")
+opposingCandlesRequired = input.int(3, "Opposing candles to exit", minval=1, group=groupCandleExit)
+
+groupVisual = "10. Display"
 showLCBars = input.bool(true, "Show LC bar colors", group=groupVisual)
 showRawSignals = input.bool(false, "Show original LC signal markers", group=groupVisual)
 showStats = input.bool(true, "Show LC-style trade stats", group=groupVisual)
@@ -243,6 +248,7 @@ var int pendingDirection = 0
 var int confirmedBars = 0
 var int lastEntryBar = na
 var int earlyFlips = 0
+var int opposingCandleCount = 0
 var float activeStop = na
 var float activeTarget = na
 if barstate.isconfirmed
@@ -269,6 +275,18 @@ bool enterLong = barstate.isconfirmed and entryWindow and not na(riskDistance) a
 bool enterShort = barstate.isconfirmed and entryWindow and not na(riskDistance) and
      (useColorConfirmation ? pendingDirection == -1 and confirmedBars == confirmationBars : lcShort and slopeShort)
 
+// Count regular price candles only after entry. A doji or a candle in the
+// position's direction breaks the run; the entry candle starts at zero.
+if barstate.isconfirmed
+    if strategy.position_size == 0 or enterLong or enterShort or na(lastEntryBar) or bar_index <= lastEntryBar
+        opposingCandleCount := 0
+    else if strategy.position_size > 0
+        opposingCandleCount := close < open ? opposingCandleCount + 1 : 0
+    else
+        opposingCandleCount := close > open ? opposingCandleCount + 1 : 0
+bool opposingLongExit = useCandleColorExit and strategy.position_size > 0 and opposingCandleCount >= opposingCandlesRequired
+bool opposingShortExit = useCandleColorExit and strategy.position_size < 0 and opposingCandleCount >= opposingCandlesRequired
+
 // With confirmation, count the standard four-bar exit from the actual fill.
 // With both optional filters off, LC's own entry and exit signals are used.
 bool longLCExit = dynamicAllowed ? dynamicLongExit :
@@ -280,13 +298,15 @@ bool shortLCExit = dynamicAllowed ? dynamicShortExit :
 
 if barstate.isconfirmed
     if strategy.position_size > 0 and not enterShort and
-         (longLCExit or (useColorConfirmation and lcShort))
-        strategy.close("LC Long", comment="LC exit", alert_message="ARES LC LONG EXIT")
+         (longLCExit or (useColorConfirmation and lcShort) or opposingLongExit)
+        strategy.close("LC Long", comment=opposingLongExit ? "Red candles" : "LC exit",
+             alert_message=opposingLongExit ? "ARES LC LONG CANDLE EXIT" : "ARES LC LONG EXIT")
         activeStop := na
         activeTarget := na
     if strategy.position_size < 0 and not enterLong and
-         (shortLCExit or (useColorConfirmation and lcLong))
-        strategy.close("LC Short", comment="LC exit", alert_message="ARES LC SHORT EXIT")
+         (shortLCExit or (useColorConfirmation and lcLong) or opposingShortExit)
+        strategy.close("LC Short", comment=opposingShortExit ? "Green candles" : "LC exit",
+             alert_message=opposingShortExit ? "ARES LC SHORT CANDLE EXIT" : "ARES LC SHORT EXIT")
         activeStop := na
         activeTarget := na
     if enterLong
@@ -328,7 +348,7 @@ plot(showRiskLevels and useRTarget and strategy.position_size != 0 ? activeTarge
      "R target", color=bullColor, style=plot.style_linebr)
 
 if showStats
-    var table statsTable = table.new(position.top_right, 2, 8, frame_color=clearColor,
+    var table statsTable = table.new(position.top_right, 2, 9, frame_color=clearColor,
          frame_width=1, border_width=1, border_color=clearColor)
     if barstate.islast
         int trades = strategy.closedtrades
@@ -355,3 +375,5 @@ if showStats
         table.cell(statsTable, 1, 6, str.tostring(earlyFlips), text_color=color.gray, text_size=size.normal, text_halign=text.align_center)
         table.cell(statsTable, 0, 7, "Confirm", text_color=color.gray, text_size=size.normal, text_halign=text.align_center)
         table.cell(statsTable, 1, 7, confirmText, text_color=color.gray, text_size=size.normal, text_halign=text.align_center)
+        table.cell(statsTable, 0, 8, "Opposite Candles", text_color=color.gray, text_size=size.normal, text_halign=text.align_center)
+        table.cell(statsTable, 1, 8, useCandleColorExit ? str.tostring(opposingCandleCount) + "/" + str.tostring(opposingCandlesRequired) : "Off", text_color=color.gray, text_size=size.normal, text_halign=text.align_center)
