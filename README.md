@@ -20,6 +20,8 @@ Two independent switches modify entries:
 
 The **Use stop and profit target** switch is off by default. When checked, entry-bar ATR × the selected multiplier defines **1R**. The stop is 1R away and the profit order is placed at the selected multiple (default 2R, adjustable to 3R). LC exit signals can still close the trade earlier. When unchecked, no R stop or target is placed. The LC-style trade box uses actual closed Strategy Tester trades and shows confirmation progress.
 
+**Optional regular candle color exit:** Turn on **Exit after consecutive opposing candles** and set **Opposing candles to exit** (default 3). A red price candle counts against a long; a green price candle counts against a short. The counter starts at **0 on entry** and increments on each subsequent completed opposing candle. A candle in the trade direction or a doji resets it to 0. The trade closes when the count reaches the threshold. The trade box shows the current count. This uses regular `close` versus `open` candle colors, separate from LC prediction-bar colors; LC exits and an enabled R stop or target can still close a trade first.
+
 ## Kernel Swing Strategy
 
 [`ARES_Kernel_Swing_Strategy_JXS.pine`](ARES_Kernel_Swing_Strategy_JXS.pine) trades the rational quadratic kernel line from jdehorty's Lorentzian Classification indicator. The default color changes with the line's slope; enable **Enhance Kernel Smoothing** to use the original Gaussian comparison instead. Lookback, relative weighting, regression level, lag, and source are configurable.
