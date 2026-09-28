@@ -7,15 +7,11 @@
 
 ARES contains the original BBSR/LC confirmation engine and two separate strategies: one follows Lorentzian Classification's own trade signals; the other follows kernel color changes. New entries use the 09:30–15:00 **America/New_York** window, which follows daylight saving time.
 
-## How Lorentzian Classification works
+## Lorentzian Classification
 
-Jdehorty's [original TradingView indicator](https://www.tradingview.com/script/WhBzgfDu-Machine-Learning-Lorentzian-Classification/) describes the current bar using a small set of normalized indicator readings such as RSI, WaveTrend, CCI, and ADX. It compares that combination with historical bars, collects labels from selected past patterns, and adds the labels into a bullish or bearish vote. This is a history-based classifier: there is no neural network being retrained on every chart update, and a stronger vote is not a calibrated probability of winning.
+[Jdehorty's original indicator](https://www.tradingview.com/script/WhBzgfDu-Machine-Learning-Lorentzian-Classification/) compares readings such as RSI, WaveTrend, CCI, and ADX with past bars. Selected past patterns vote bullish or bearish. Its logarithmic distance reduces the weight of unusually large differences. The author's “price-time” explanation is an analogy for market outliers; the script does not read news.
 
-The *Lorentzian distance* in this script sums `log(1 + absolute difference)` for each feature. The logarithm makes an unusually large difference contribute less than it would in a simple straight-line (Euclidean) comparison. The author's “price-time” explanation uses market shocks and major news as an analogy for why outliers can distort pattern matching. The code does **not** read an economic calendar or identify news events. Its approximate neighbor selection also differs from textbook k-nearest neighbors, so the chosen historical patterns are not necessarily the mathematically closest bars.
-
-A positive or negative vote becomes an LC direction only after the enabled volatility, regime, and ADX filters; optional moving-average filters can also govern signals. The rational quadratic **kernel regression line is a separate trend check**, not the classifier itself. LC's bar colors and prediction numbers show the sign and strength of the vote; a BUY/SELL marker is a signal after the script's conditions, not an order fill.
-
-In this repo, the **LC Trade Strategy** acts on LC buy/sell signals with optional color-bar and price-slope confirmation. The **Kernel Swing Strategy** trades kernel color changes directly. The **Confirmation Engine** starts from a BBSR arrow and asks LC and slope to agree. These are different uses of the original indicator, so their entries and results can differ.
+In ARES, the LC Trade Strategy follows LC buy/sell signals, with optional color-bar and slope checks. Kernel Swing trades the kernel line on its own. The Confirmation Engine uses LC to check BBSR arrows. The kernel line is separate from the LC vote.
 
 ## LC Trade Strategy
 
