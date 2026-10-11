@@ -1,0 +1,290 @@
+// This Source Code Form is subject to the Mozilla Public License, v. 2.0.
+// https://mozilla.org/MPL/2.0/
+// Kernel functions: jdehorty. DELPHI 3 strategy adaptation: JXS_918.
+//@version=6
+//@strategy_alert_message {{strategy.order.alert_message}} | {{ticker}} @ {{strategy.order.price}}
+strategy("DELPHI 3 - Kernel Volume Profile Swing {JXS_918}", shorttitle="DELPHI 3 JXS_918", overlay=true, pyramiding=0, process_orders_on_close=true, calc_on_order_fills=false, calc_on_every_tick=false, precision=4, max_labels_count=500)
+import jdehorty/KernelFunctions/2 as kernels
+
+color cGreen = #009988
+color cRed = #CC3311
+
+// GENERAL
+string G = "General"
+bool enableLongs = input.bool(true, "Enable Longs", group=G)
+bool enableShorts = input.bool(true, "Enable Shorts", group=G)
+bool exitOnOppositeKernelFlip = input.bool(true, "Exit on Opposite Kernel Flip", group=G)
+bool closeAtSessionEnd = input.bool(true, "Close at Session End", group=G)
+
+// EDITABLE INTRADAY SESSION. America/New_York handles daylight saving time.
+string S = "Trading Session"
+string tradeTimezone = input.string("America/New_York", "Timezone", group=S)
+int startHour = input.int(9, "Start Hour", minval=0, maxval=23, inline="start", group=S)
+int startMinute = input.int(30, "Minute", minval=0, maxval=59, inline="start", group=S)
+int endHour = input.int(15, "End Hour", minval=0, maxval=23, inline="end", group=S)
+int endMinute = input.int(0, "Minute", minval=0, maxval=59, inline="end", group=S)
+int startOfDay = startHour * 60 + startMinute
+int endOfDay = endHour * 60 + endMinute
+if barstate.isfirst and (not timeframe.isintraday or startOfDay >= endOfDay)
+    runtime.error("Use an intraday chart and a start time earlier than the end time.")
+int dayKey = timestamp(tradeTimezone, year(time, tradeTimezone), month(time, tradeTimezone), dayofmonth(time, tradeTimezone), 0, 0)
+int startTimestamp = timestamp(tradeTimezone, year(time, tradeTimezone), month(time, tradeTimezone), dayofmonth(time, tradeTimezone), startHour, startMinute)
+int cutoffTimestamp = timestamp(tradeTimezone, year(time, tradeTimezone), month(time, tradeTimezone), dayofmonth(time, tradeTimezone), endHour, endMinute)
+bool weekday = dayofweek(time, tradeTimezone) >= dayofweek.monday and dayofweek(time, tradeTimezone) <= dayofweek.friday
+bool inTradingSession = weekday and not na(time_close) and time >= startTimestamp and time_close < cutoffTimestamp
+bool pastCutoff = not na(time_close) and time_close >= cutoffTimestamp
+
+// KERNEL. Equal values retain the last color to avoid an equality-triggered flip.
+string K = "Kernel Regression"
+float kernelSource = input.source(close, "Source", group=K)
+bool showKernel = input.bool(true, "Show Kernel Line", group=K)
+bool useKernelSmoothing = input.bool(false, "Enhanced Smoothing", group=K)
+int kernelLookback = input.int(8, "Lookback Window", minval=3, maxval=100, group=K)
+float kernelRelativeWeight = input.float(8.0, "Relative Weighting", minval=0.25, maxval=25, step=0.25, group=K)
+int kernelRegressionLevel = input.int(25, "Regression Level", minval=2, maxval=100, group=K)
+int kernelLag = input.int(5, "Smoothing Lag", minval=1, maxval=20, group=K)
+float yhat1 = kernels.rationalQuadratic(kernelSource, kernelLookback, kernelRelativeWeight, kernelRegressionLevel)
+float yhat2 = kernels.gaussian(kernelSource, math.max(1, kernelLookback - kernelLag), kernelRegressionLevel)
+float kernelDifference = useKernelSmoothing ? yhat2 - yhat1 : yhat1 - yhat1[1]
+var int kernelDirection = 0
+if barstate.isconfirmed and not na(kernelDifference)
+    kernelDirection := kernelDifference > 0 ? 1 : kernelDifference < 0 ? -1 : kernelDirection
+bool kernelBullish = kernelDirection == 1
+bool kernelBearish = kernelDirection == -1
+bool kernelBullishFlip = kernelDirection == 1 and kernelDirection[1] == -1
+bool kernelBearishFlip = kernelDirection == -1 and kernelDirection[1] == 1
+plot(showKernel ? yhat1 : na, "DELPHI 3 Kernel", color=kernelBullish ? cGreen : kernelBearish ? cRed : color.gray, linewidth=2)
+
+// SLOPE FILTER
+string F = "Slope Filter"
+bool useSlopeFilter = input.bool(true, "Use Slope Filter", group=F)
+int slopeLookbackBars = input.int(2, "Slope Lookback Bars", minval=1, maxval=20, group=F)
+int slopeAtrLength = input.int(14, "ATR Length", minval=1, group=F)
+float minSlopeAtr = input.float(0.05, "Minimum Slope (ATR units)", minval=0, step=0.01, group=F)
+float slopeAtr = ta.atr(slopeAtrLength)
+float kernelSlopeAtr = slopeAtr > 0 ? (yhat1 - yhat1[slopeLookbackBars]) / slopeAtr : na
+bool longSlopePass = not useSlopeFilter or kernelSlopeAtr >= minSlopeAtr
+bool shortSlopePass = not useSlopeFilter or kernelSlopeAtr <= -minSlopeAtr
+
+// DIRECTIONAL VOLATILITY PUSH: ATR expansion + range expansion + volume expansion.
+string V = "Volatility Push"
+bool useVolatilityPushFilter = input.bool(true, "Require Volatility Push", group=V)
+bool showVolatilityPush = input.bool(true, "Show VP Markers", group=V)
+int vpConfirmationWindow = input.int(2, "Push Freshness (bars before entry)", minval=0, maxval=10, group=V, tooltip="0 requires a push on the entry bar. A push must also occur on or after the kernel flip.")
+int vpFastAtrLength = input.int(5, "Fast ATR Length", minval=1, group=V)
+int vpSlowAtrLength = input.int(20, "Slow ATR Length", minval=2, group=V)
+float vpMinAtrRatio = input.float(1.10, "Min ATR Ratio", minval=0.1, step=0.05, group=V)
+float vpMinRangeAtr = input.float(1.25, "Min Range / ATR", minval=0.1, step=0.05, group=V)
+int vpVolumeLength = input.int(20, "Volume Average Length", minval=1, group=V)
+float vpMinVolumeRatio = input.float(1.50, "Min Volume Ratio", minval=0.1, step=0.05, group=V)
+int vpMinScore = input.int(2, "Minimum Volatility Score", minval=1, maxval=3, group=V)
+float vpMinBodyAtr = input.float(0.80, "Min Body / ATR", minval=0, step=0.05, group=V)
+float vpMinBodyRange = input.float(0.65, "Min Body / Candle Range", minval=0, maxval=1, step=0.05, group=V)
+float vpBullCloseLocation = input.float(0.70, "Bull Close Location >=", minval=0, maxval=1, step=0.05, group=V)
+float vpBearCloseLocation = input.float(0.30, "Bear Close Location <=", minval=0, maxval=1, step=0.05, group=V)
+float vpFastAtr = ta.atr(vpFastAtrLength)
+float vpSlowAtr = ta.atr(vpSlowAtrLength)
+float vpRange = math.max(high - low, syminfo.mintick)
+float vpBody = math.abs(close - open)
+float vpCloseLocation = (close - low) / vpRange
+float vpVolumeAverage = ta.sma(volume, vpVolumeLength)
+float vpAtrRatio = vpSlowAtr > 0 ? vpFastAtr / vpSlowAtr : 0
+float vpRangeAtr = vpSlowAtr > 0 ? vpRange / vpSlowAtr : 0
+float vpVolumeRatio = vpVolumeAverage > 0 ? volume / vpVolumeAverage : 0
+float vpBodyAtr = vpSlowAtr > 0 ? vpBody / vpSlowAtr : 0
+float vpBodyRange = vpBody / vpRange
+int vpScore = (vpAtrRatio >= vpMinAtrRatio ? 1 : 0) + (vpRangeAtr >= vpMinRangeAtr ? 1 : 0) + (vpVolumeRatio >= vpMinVolumeRatio ? 1 : 0)
+bool bullVolatilityPush = vpScore >= vpMinScore and close > open and vpCloseLocation >= vpBullCloseLocation and vpBodyAtr >= vpMinBodyAtr and vpBodyRange >= vpMinBodyRange
+bool bearVolatilityPush = vpScore >= vpMinScore and close < open and vpCloseLocation <= vpBearCloseLocation and vpBodyAtr >= vpMinBodyAtr and vpBodyRange >= vpMinBodyRange
+int bullPushAge = nz(ta.barssince(bullVolatilityPush), 100000)
+int bearPushAge = nz(ta.barssince(bearVolatilityPush), 100000)
+plotshape(showVolatilityPush and bullVolatilityPush, "Bullish Push", shape.triangleup, location.belowbar, cGreen, size=size.tiny, text="VP+")
+plotshape(showVolatilityPush and bearVolatilityPush, "Bearish Push", shape.triangledown, location.abovebar, cRed, size=size.tiny, text="VP-")
+
+// VOLUME PROFILE
+// Approximation: each chart candle's volume is spread uniformly over its high-low
+// range, in proportion to overlap with price bins. This is not tick volume-at-price
+// and will not exactly match TradingView's built-in lower-timeframe profiles.
+// The profile excludes the current candle and uses only completed eligible bars.
+string P = "Volume Profile Confirmation"
+bool useProfileFilter = input.bool(true, "Use Volume Profile Filter", group=P)
+int profileLookback = input.int(100, "Profile Lookback (eligible bars)", minval=20, maxval=200, group=P)
+int profileRows = input.int(24, "Price Bins", minval=10, maxval=40, group=P)
+float valueAreaPercent = input.float(70, "Value Area %", minval=50, maxval=95, step=1, group=P)
+bool profileSessionOnly = input.bool(true, "Use Profile Session Bars Only", group=P)
+string profileSession = input.session("0930-1600", "Profile Session", group=P)
+string profileMode = input.string("Value-area breakout", "Confirmation Mode", options=["Value-area breakout", "POC bias"], group=P, tooltip="Value-area breakout is stricter. POC bias permits entries inside the value area.")
+int acceptanceBars = input.int(2, "Consecutive Acceptance Closes", minval=1, maxval=10, group=P)
+int maxSetupBars = input.int(6, "Maximum Bars After Kernel Flip", minval=0, maxval=30, group=P, tooltip="0 = flip bar only. With two acceptance closes, use at least 1.")
+float profileBufferAtr = input.float(0.05, "Breakout Buffer (ATR units)", minval=0, step=0.01, group=P)
+bool requireKernelPoc = input.bool(true, "Kernel Must Be on Correct Side of POC", group=P)
+bool showProfileLevels = input.bool(true, "Show Rolling POC / VAH / VAL", group=P)
+bool showSetupLevels = input.bool(true, "Show Frozen Setup Boundary", group=P)
+
+f_profile(array<float> highs, array<float> lows, array<float> vols, int rows, float pct) =>
+    float poc = na
+    float vah = na
+    float val = na
+    int n = array.size(vols)
+    if n > 0
+        float base = array.min(lows)
+        float top = array.max(highs)
+        float stepSize = math.max((top - base) / rows, syminfo.mintick)
+        array<float> bins = array.new_float(rows, 0.0)
+        for i = 0 to n - 1
+            float hi = array.get(highs, i)
+            float lo = array.get(lows, i)
+            float vol = array.get(vols, i)
+            int first = math.max(0, math.min(rows - 1, int(math.floor((lo - base) / stepSize))))
+            int last = math.max(0, math.min(rows - 1, int(math.floor((hi - base) / stepSize))))
+            if hi <= lo
+                array.set(bins, first, array.get(bins, first) + vol)
+            else
+                for j = first to last
+                    float binLow = base + j * stepSize
+                    float overlap = math.max(0.0, math.min(hi, binLow + stepSize) - math.max(lo, binLow))
+                    array.set(bins, j, array.get(bins, j) + vol * overlap / (hi - lo))
+        float total = array.sum(bins)
+        if total > 0
+            int peak = array.indexof(bins, array.max(bins))
+            int left = peak
+            int right = peak
+            float covered = array.get(bins, peak)
+            // Contiguous value area expanded from POC, favoring larger adjacent bin.
+            while covered < total * pct / 100 and (left > 0 or right < rows - 1)
+                float below = left > 0 ? array.get(bins, left - 1) : -1.0
+                float above = right < rows - 1 ? array.get(bins, right + 1) : -1.0
+                if above >= below and right < rows - 1
+                    right += 1
+                    covered += array.get(bins, right)
+                else
+                    left -= 1
+                    covered += array.get(bins, left)
+            poc := base + (peak + 0.5) * stepSize
+            vah := base + (right + 1) * stepSize
+            val := base + left * stepSize
+    [poc, vah, val]
+
+var array<float> profileHighs = array.new_float()
+var array<float> profileLows = array.new_float()
+var array<float> profileVolumes = array.new_float()
+bool profileReady = array.size(profileVolumes) == profileLookback
+// Arrays still contain only earlier bars here; append current bar AFTER signals.
+[rollingPoc, rollingVah, rollingVal] = f_profile(profileHighs, profileLows, profileVolumes, profileRows, valueAreaPercent)
+bool profileValid = profileReady and not na(rollingPoc)
+plot(showProfileLevels and profileValid ? rollingPoc : na, "Rolling POC", color=color.orange, style=plot.style_stepline)
+plot(showProfileLevels and profileValid ? rollingVah : na, "Rolling VAH", color=color.new(cGreen, 35), style=plot.style_stepline)
+plot(showProfileLevels and profileValid ? rollingVal : na, "Rolling VAL", color=color.new(cRed, 35), style=plot.style_stepline)
+
+// SETUP: flip arms one opportunity; confirmation may follow while color persists.
+// Snapshot the profile and buffer on the flip so moving levels cannot manufacture
+// acceptance. Entries require consecutive CLOSES beyond the frozen boundary.
+var int pendingDirection = 0
+var int setupBar = na
+var int setupDay = na
+var int acceptedCloses = 0
+var float setupPoc = na
+var float setupBoundary = na
+bool longEntrySignal = false
+bool shortEntrySignal = false
+
+// 2R RISK: snapshot ATR at entry. Relative tick exits anchor to actual fill price.
+string R = "2R Profit / Stop"
+bool useRiskManagement = input.bool(true, "Use Profit / Stop", group=R)
+int riskAtrLength = input.int(14, "Risk ATR Length", minval=1, group=R)
+float stopAtrMultiple = input.float(1, "Stop ATR Multiple", minval=0.05, step=0.05, group=R)
+float rewardRiskMultiple = input.float(2, "Profit Target (R)", minval=0.25, step=0.25, group=R)
+bool showRiskLevels = input.bool(true, "Show Stop / Target", group=R)
+float riskAtr = ta.atr(riskAtrLength)
+var int activeStopTicks = na
+var int activeTargetTicks = na
+
+if barstate.isconfirmed
+    if not inTradingSession or (not na(setupDay) and setupDay != dayKey)
+        pendingDirection := 0
+        acceptedCloses := 0
+    if kernelBullishFlip or kernelBearishFlip
+        pendingDirection := 0
+        acceptedCloses := 0
+        int newDirection = kernelBullishFlip ? 1 : -1
+        bool enabled = newDirection == 1 ? enableLongs : enableShorts
+        if inTradingSession and enabled and (not useProfileFilter or profileValid)
+            pendingDirection := newDirection
+            setupBar := bar_index
+            setupDay := dayKey
+            setupPoc := rollingPoc
+            float edge = profileMode == "POC bias" ? rollingPoc : newDirection == 1 ? rollingVah : rollingVal
+            setupBoundary := edge + newDirection * profileBufferAtr * slopeAtr
+    if pendingDirection != 0
+        int setupAge = bar_index - setupBar
+        if setupAge > maxSetupBars or kernelDirection != pendingDirection
+            pendingDirection := 0
+            acceptedCloses := 0
+        else
+            bool priceAccepted = pendingDirection == 1 ? close > setupBoundary : close < setupBoundary
+            acceptedCloses := priceAccepted ? acceptedCloses + 1 : 0
+            bool areaPass = not useProfileFilter or acceptedCloses >= acceptanceBars
+            bool kernelPocPass = not useProfileFilter or not requireKernelPoc or (pendingDirection == 1 ? yhat1 > setupPoc : yhat1 < setupPoc)
+            bool slopePass = pendingDirection == 1 ? longSlopePass : shortSlopePass
+            int pushAge = pendingDirection == 1 ? bullPushAge : bearPushAge
+            int oppositePushAge = pendingDirection == 1 ? bearPushAge : bullPushAge
+            bool pushPass = not useVolatilityPushFilter or (pushAge <= vpConfirmationWindow and pushAge <= setupAge and pushAge < oppositePushAge)
+            bool riskReady = not useRiskManagement or (not na(riskAtr) and riskAtr > 0)
+            if areaPass and kernelPocPass and slopePass and pushPass and riskReady
+                longEntrySignal := pendingDirection == 1 and strategy.position_size <= 0
+                shortEntrySignal := pendingDirection == -1 and strategy.position_size >= 0
+                pendingDirection := 0
+                acceptedCloses := 0
+
+bool canEnterLong = longEntrySignal
+bool canEnterShort = shortEntrySignal
+if canEnterLong or canEnterShort
+    if useRiskManagement
+        activeStopTicks := math.max(1, int(math.round(riskAtr * stopAtrMultiple / syminfo.mintick)))
+        activeTargetTicks := math.max(1, int(math.round(activeStopTicks * rewardRiskMultiple)))
+    if canEnterLong
+        strategy.cancel("D3 Short Risk")
+        strategy.entry("D3 Long", strategy.long, comment="DELPHI 3 LONG", alert_message="DELPHI 3 LONG")
+    else
+        strategy.cancel("D3 Long Risk")
+        strategy.entry("D3 Short", strategy.short, comment="DELPHI 3 SHORT", alert_message="DELPHI 3 SHORT")
+
+// Attach brackets on the entry execution, then retain the same tick distances.
+if useRiskManagement and not na(activeStopTicks)
+    if canEnterLong or (strategy.position_size > 0 and not canEnterShort)
+        strategy.exit("D3 Long Risk", "D3 Long", loss=activeStopTicks, profit=activeTargetTicks, comment="DELPHI 3 R/STOP", alert_message="DELPHI 3 LONG R/STOP EXIT")
+    if canEnterShort or (strategy.position_size < 0 and not canEnterLong)
+        strategy.exit("D3 Short Risk", "D3 Short", loss=activeStopTicks, profit=activeTargetTicks, comment="DELPHI 3 R/STOP", alert_message="DELPHI 3 SHORT R/STOP EXIT")
+
+if exitOnOppositeKernelFlip and strategy.position_size > 0 and kernelBearishFlip and not canEnterShort
+    strategy.close("D3 Long", comment="KERNEL FLIP", alert_message="DELPHI 3 CLOSE LONG - KERNEL FLIP")
+if exitOnOppositeKernelFlip and strategy.position_size < 0 and kernelBullishFlip and not canEnterLong
+    strategy.close("D3 Short", comment="KERNEL FLIP", alert_message="DELPHI 3 CLOSE SHORT - KERNEL FLIP")
+if closeAtSessionEnd and pastCutoff and strategy.position_size != 0
+    strategy.close_all(comment="SESSION CUTOFF", immediately=true, alert_message="DELPHI 3 SESSION CUTOFF")
+if strategy.position_size == 0 and not canEnterLong and not canEnterShort
+    activeStopTicks := na
+    activeTargetTicks := na
+
+// Add only completed, eligible bars. Keep the rolling buffer across days.
+bool profileEligible = not profileSessionOnly or not na(time(timeframe.period, profileSession + ":23456", tradeTimezone))
+if barstate.isconfirmed and profileEligible and not na(volume) and volume >= 0
+    array.push(profileHighs, high)
+    array.push(profileLows, low)
+    array.push(profileVolumes, volume)
+    if array.size(profileVolumes) > profileLookback
+        array.shift(profileHighs)
+        array.shift(profileLows)
+        array.shift(profileVolumes)
+
+// DISPLAY. A setup is consumed after one entry; no re-entry until another flip.
+plot(showSetupLevels and useProfileFilter and (pendingDirection != 0 or canEnterLong or canEnterShort) ? setupBoundary : na, "Frozen Acceptance Boundary", color=color.yellow, linewidth=2, style=plot.style_linebr)
+plotshape(canEnterLong, "DELPHI 3 Long", shape.labelup, location.belowbar, cGreen, text="D3 L", textcolor=color.white, size=size.small)
+plotshape(canEnterShort, "DELPHI 3 Short", shape.labeldown, location.abovebar, cRed, text="D3 S", textcolor=color.white, size=size.small)
+float displayedEntry = canEnterLong or canEnterShort ? close : strategy.position_avg_price
+int displayedDirection = canEnterLong ? 1 : canEnterShort ? -1 : strategy.position_size > 0 ? 1 : strategy.position_size < 0 ? -1 : 0
+float stopPrice = displayedDirection != 0 and not na(activeStopTicks) ? displayedEntry - displayedDirection * activeStopTicks * syminfo.mintick : na
+float targetPrice = displayedDirection != 0 and not na(activeTargetTicks) ? displayedEntry + displayedDirection * activeTargetTicks * syminfo.mintick : na
+plot(showRiskLevels and useRiskManagement ? stopPrice : na, "Stop", color=cRed, style=plot.style_linebr)
+plot(showRiskLevels and useRiskManagement ? targetPrice : na, "R Target", color=cGreen, style=plot.style_linebr)
+// Strategy alerts: create an alert with "Order fills only". No alertcondition().
